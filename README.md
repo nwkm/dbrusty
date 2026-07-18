@@ -93,7 +93,7 @@ cargo run --release
 | `q` | Quit |
 | `?` | Help |
 | `Tab` | Cycle focus forward |
-| `Ctrl+H` / `Backspace` | Cycle focus reverse |
+| `Shift+Tab` | Cycle focus reverse |
 | `Alt+H` | Toggle Inspector pane |
 
 ### Sidebar (Database Explorer)
@@ -102,7 +102,7 @@ cargo run --release
 |-----|--------|
 | `j` / `Down` | Select next |
 | `k` / `Up` | Select previous |
-| `o` / `Right` | Expand / Load children |
+| `l` / `Right` | Expand / Load children |
 | `h` / `Left` | Collapse / Go to parent |
 | `g` | Go to first |
 | `G` | Go to last |
@@ -112,8 +112,8 @@ cargo run --release
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Right` | Next column |
-| `BackTab` / `Left` | Previous column |
+| `Right` | Next column |
+| `Left` | Previous column |
 | `Up` / `Down` | Navigate rows |
 | `Enter` | Edit selected cell |
 | `Y` | Copy cell value |
@@ -122,8 +122,7 @@ cargo run --release
 | `Ctrl+E` | Edit query text |
 | `Ctrl+B` / `Ctrl+F` | Scroll results left/right |
 | `Ctrl+U` / `Ctrl+D` | Scroll results up/down |
-| `Ctrl+J` / `Enter` | Focus results |
-| `Ctrl+K` | Focus editor |
+
 
 ### Inspector Pane
 

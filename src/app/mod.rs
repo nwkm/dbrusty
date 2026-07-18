@@ -500,23 +500,7 @@ impl App {
         if let Some(provider) = self.pool.get_active() {
             match provider.get_columns(table).await {
                 Ok(columns) => {
-                    let id = format!("table:{}", table);
-                    let column_items: Vec<crate::widgets::tree::TreeItem> = columns
-                        .iter()
-                        .map(|col| {
-                            let pk = if col.is_pk { " PK" } else { "" };
-                            let label = format!("{} ({}){}", col.name, col.type_name, pk);
-                            crate::widgets::tree::TreeItem::leaf(
-                                &format!("column:{}.{}", table, col.name),
-                                &label,
-                                4,
-                            )
-                        })
-                        .collect();
-
                     self.metadata_cache.set_columns(table.to_string(), columns);
-                    self.explorer_tree.set_children(&id, column_items);
-                    self.explorer_tree.toggle_by_id(&id);
                     self.set_status(format!("Loaded columns for \"{}\"", table));
                 }
                 Err(e) => {
@@ -725,7 +709,7 @@ impl App {
             .saturating_sub(2) as usize;
 
         match key.code {
-            KeyCode::Tab | KeyCode::Right => {
+            KeyCode::Right => {
                 self.inspector_edit_col = None;
                 if self.selected_col + 1 < self.query_columns.len() {
                     self.selected_col += 1;
@@ -733,7 +717,7 @@ impl App {
                 self.ensure_cell_visible(data_height);
                 true
             }
-            KeyCode::BackTab | KeyCode::Left => {
+            KeyCode::Left => {
                 self.inspector_edit_col = None;
                 if self.selected_col > 0 {
                     self.selected_col -= 1;
@@ -1180,12 +1164,7 @@ impl App {
                     self.result_scroll_v = self.result_scroll_v.saturating_add(5);
                 }
             }
-            KeyCode::Char('h') if key.modifiers == KeyModifiers::CONTROL => {
-                self.cycle_focus_reverse();
-                self.set_status(format!("Focus: {:?}", self.focus));
-            }
-            // Ctrl+H maps to Backspace on many terminals in raw mode
-            KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
+            KeyCode::BackTab => {
                 self.cycle_focus_reverse();
                 self.set_status(format!("Focus: {:?}", self.focus));
             }
@@ -1193,31 +1172,7 @@ impl App {
                 self.cycle_focus();
                 self.set_status(format!("Focus: {:?}", self.focus));
             }
-            KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
-                if self.current_page == Page::QueryEditor && self.focus == Focus::Main
-                    && self.query_editor_focus == QueryEditorFocus::Editor
-                {
-                    self.query_editor_focus = QueryEditorFocus::Results;
-                    self.set_status("Focus: Results");
-                }
-            }
-            // Ctrl+J maps to Enter on many terminals in raw mode
-            KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
-                if self.current_page == Page::QueryEditor && self.focus == Focus::Main
-                    && self.query_editor_focus == QueryEditorFocus::Editor
-                {
-                    self.query_editor_focus = QueryEditorFocus::Results;
-                    self.set_status("Focus: Results");
-                }
-            }
-            KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
-                if self.current_page == Page::QueryEditor && self.focus == Focus::Main
-                    && self.query_editor_focus == QueryEditorFocus::Results
-                {
-                    self.query_editor_focus = QueryEditorFocus::Editor;
-                    self.set_status("Focus: Editor");
-                }
-            }
+
             KeyCode::Char('h') if key.modifiers == KeyModifiers::ALT => {
                 self.show_inspector = !self.show_inspector;
                 self.inspector_scroll = 0;
@@ -1237,6 +1192,17 @@ impl App {
         self.update_key_hints();
     }
 
+    fn auto_load_selected_table_columns(&mut self) {
+        if let Some(id) = self.explorer_tree.selected_id() {
+            if id.starts_with("table:") && !id.ends_with(':') {
+                let table_name = id.strip_prefix("table:").unwrap().to_string();
+                if self.metadata_cache.get_columns(&table_name).is_none() {
+                    self.pending_action = PendingAction::LoadColumns { table: table_name };
+                }
+            }
+        }
+    }
+
     fn handle_sidebar_key(&mut self, key: &KeyEvent) -> bool {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return false;
@@ -1244,13 +1210,19 @@ impl App {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.explorer_tree.select_down();
+                if self.current_page != Page::QueryEditor {
+                    self.auto_load_selected_table_columns();
+                }
                 true
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.explorer_tree.select_up();
+                if self.current_page != Page::QueryEditor {
+                    self.auto_load_selected_table_columns();
+                }
                 true
             }
-            KeyCode::Char('o') | KeyCode::Right => {
+            KeyCode::Char('l') | KeyCode::Right => {
                 let id = self.explorer_tree.selected_id();
                 if let Some(ref id) = id {
                     let is_expanded = self.explorer_tree.is_item_expanded(id);
@@ -1284,6 +1256,16 @@ impl App {
             }
             KeyCode::Char('G') => {
                 self.explorer_tree.go_to_last();
+                true
+            }
+            KeyCode::Enter => {
+                let id = self.explorer_tree.selected_id();
+                if let Some(ref id) = id {
+                    if id.starts_with("column:") {
+                        self.current_page = Page::Explorer;
+                        self.set_status(format!("Viewing column details"));
+                    }
+                }
                 true
             }
             _ => false,

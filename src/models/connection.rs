@@ -74,7 +74,6 @@ pub struct ConnectionConfig {
     pub ssl: bool,
     pub created_at: DateTime<Utc>,
     pub last_connected: Option<DateTime<Utc>>,
-    #[serde(skip)]
     pub password: Option<String>,
 }
 

@@ -12,6 +12,19 @@ pub enum Value {
     Null,
 }
 
+impl Value {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Integer(_) => "integer",
+            Value::Float(_) => "float",
+            Value::Text(_) => "string",
+            Value::Blob(_) => "blob",
+        }
+    }
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

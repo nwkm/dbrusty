@@ -29,6 +29,22 @@ fn value_from_row(row: &PgRow, idx: usize) -> Value {
         .or_else(|_| row.try_get::<i64, _>(idx).map(Value::Integer))
         .or_else(|_| row.try_get::<f32, _>(idx).map(|v| Value::Float(v as f64)))
         .or_else(|_| row.try_get::<f64, _>(idx).map(Value::Float))
+        .or_else(|_| {
+            row.try_get::<chrono::NaiveDate, _>(idx)
+                .map(|d| Value::Text(d.format("%Y-%m-%d").to_string()))
+        })
+        .or_else(|_| {
+            row.try_get::<chrono::NaiveDateTime, _>(idx)
+                .map(|dt| Value::Text(dt.format("%Y-%m-%d %H:%M:%S").to_string()))
+        })
+        .or_else(|_| {
+            row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx)
+                .map(|dt| Value::Text(dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()))
+        })
+        .or_else(|_| {
+            row.try_get::<chrono::NaiveTime, _>(idx)
+                .map(|t| Value::Text(t.format("%H:%M:%S").to_string()))
+        })
         .or_else(|_| row.try_get::<String, _>(idx).map(Value::Text))
         .or_else(|_| row.try_get::<Vec<u8>, _>(idx).map(Value::Blob))
         .unwrap_or(Value::Null)

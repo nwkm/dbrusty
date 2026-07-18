@@ -4,10 +4,25 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent,
 use ratatui::layout::Rect;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellEditMode {
+    Inactive,
+    Editing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellEditFocus {
+    Editor,
+    Cancel,
+    Confirm,
+}
+
 use crate::config::AppConfig;
 use crate::database::metadata::MetadataCache;
 use crate::database::pool::ConnectionPool;
 use crate::database::provider::DatabaseProvider;
+use crate::database::result::Value;
+use crate::database::types::ColumnInfo;
 use crate::models::connection::{ConnectionConfig, DatabaseType};
 use crate::providers::postgres::PostgresProvider;
 use crate::providers::sqlite::SqliteProvider;
@@ -66,6 +81,12 @@ pub enum Focus {
     Sidebar,
     Main,
     Inspector,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryEditorFocus {
+    Editor,
+    Results,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,8 +246,28 @@ pub struct App {
     pub log_scroll: usize,
     pub query_text: String,
     pub query_results: String,
+    pub query_columns: Vec<String>,
+    pub query_data: Vec<Vec<String>>,
+    pub query_data_typed: Vec<Vec<Value>>,
+    pub query_column_info: Vec<ColumnInfo>,
+    pub query_col_widths: Vec<usize>,
+    pub selected_row: usize,
+    pub selected_col: usize,
+    pub show_inspector: bool,
+    pub inspector_scroll: usize,
+    pub inspector_edit_col: Option<usize>,
+    pub inspector_edit_value: String,
+    pub inspector_edit_cursor: usize,
+    pub inspector_edit_scroll_h: u16,
+    pub inspector_saved_value: Option<(usize, usize, String)>,
+    pub cell_edit_mode: CellEditMode,
+    pub cell_edit_input: InputField,
+    pub cell_edit_focus: CellEditFocus,
     pub query_editor: InputField,
     pub editing_query: bool,
+    pub query_editor_focus: QueryEditorFocus,
+    pub result_scroll_v: usize,
+    pub result_scroll_h: u16,
 }
 
 impl App {
@@ -237,6 +278,30 @@ impl App {
             self.log_entries.remove(0);
         }
         self.status_message = msg;
+    }
+
+    fn clamp_result_scroll(&mut self) {
+        let lines: Vec<&str> = self.query_results.lines().collect();
+        let header_end = lines
+            .iter()
+            .position(|l| l.contains("---"))
+            .map(|i| i + 1)
+            .unwrap_or(1)
+            .min(lines.len());
+        let data_count = lines.len().saturating_sub(header_end);
+        let max_v = data_count.saturating_sub(1);
+        if self.result_scroll_v > max_v {
+            self.result_scroll_v = max_v;
+        }
+        let max_w = lines
+            .iter()
+            .map(|l| l.len())
+            .max()
+            .unwrap_or(0)
+            .saturating_sub(1) as u16;
+        if self.result_scroll_h > max_w {
+            self.result_scroll_h = max_w;
+        }
     }
 
     pub fn with_config(config: AppConfig) -> Self {
@@ -257,7 +322,7 @@ impl App {
             input_mode: InputMode::Normal,
             focus: Focus::Main,
             status_message: String::new(),
-            key_hints: String::from(" q:Quit | 1-8:Pages | ?:Help | Tab:Focus"),
+            key_hints: String::from(" q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector"),
             pool: ConnectionPool::new(),
             connections,
             conn_list_selected: 0,
@@ -275,8 +340,28 @@ impl App {
             log_scroll: 0,
             query_text: String::new(),
             query_results: String::new(),
+            query_columns: Vec::new(),
+            query_data: Vec::new(),
+            query_data_typed: Vec::new(),
+            query_column_info: Vec::new(),
+            query_col_widths: Vec::new(),
+            selected_row: 0,
+            selected_col: 0,
+            show_inspector: false,
+            inspector_scroll: 0,
+            inspector_edit_col: None,
+            inspector_edit_value: String::new(),
+            inspector_edit_cursor: 0,
+            inspector_edit_scroll_h: 0,
+            inspector_saved_value: None,
+            cell_edit_mode: CellEditMode::Inactive,
+            cell_edit_input: InputField::new(""),
+            cell_edit_focus: CellEditFocus::Editor,
             query_editor: InputField::new("Enter SQL query..."),
             editing_query: false,
+            query_editor_focus: QueryEditorFocus::Editor,
+            result_scroll_v: 0,
+            result_scroll_h: 0,
         };
         app.set_status("Ready");
         app
@@ -311,9 +396,10 @@ impl App {
                     Event::Key(key) => self.handle_key(key),
                     Event::Mouse(mouse) => self.handle_mouse(mouse),
                     Event::Resize(w, h) => self.handle_resize(w, h),
-                    _ => {}
-                }
-            }
+            _ => {}
+        }
+        self.clamp_result_scroll();
+    }
         }
         Ok(())
     }
@@ -331,7 +417,8 @@ impl App {
                 self.query_text.clone_from(&query);
                 self.query_editor.set_value(&query);
                 self.current_page = Page::QueryEditor;
-                self.set_status("Switched to Query Editor");
+                self.query_editor_focus = QueryEditorFocus::Results;
+                self.run_query(&query).await;
             }
             PendingAction::RunQuery(sql) => {
                 self.run_query(&sql).await;
@@ -453,26 +540,41 @@ impl App {
                     output.push_str(&format!("({:?})", result.duration));
                     output.push('\n');
 
+                    // Compute column widths
+                    let col_widths: Vec<usize> = result
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .map(|(ci, col)| {
+                            let header_len = col.name.len();
+                            let max_data = result
+                                .rows
+                                .iter()
+                                .map(|row| row.get(ci).map(|v| v.to_string().len()).unwrap_or(0))
+                                .max()
+                                .unwrap_or(0);
+                            header_len.max(max_data)
+                        })
+                        .collect();
+
                     // Column headers
-                    if !result.columns.is_empty() {
-                        for (i, col) in result.columns.iter().enumerate() {
-                            if i > 0 {
-                                output.push_str(" | ");
-                            }
-                            output.push_str(&col.name);
+                    for (i, col) in result.columns.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(" | ");
                         }
-                        output.push('\n');
-                        // Separator
-                        for (i, col) in result.columns.iter().enumerate() {
-                            if i > 0 {
-                                output.push_str("-+-");
-                            }
-                            for _ in 0..col.name.len() {
-                                output.push('-');
-                            }
-                        }
-                        output.push('\n');
+                        output.push_str(&format!("{:width$}", col.name, width = col_widths[i]));
                     }
+                    output.push('\n');
+                    // Separator
+                    for (i, w) in col_widths.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str("-+-");
+                        }
+                        for _ in 0..*w {
+                            output.push('-');
+                        }
+                    }
+                    output.push('\n');
 
                     // Rows
                     for row in &result.rows {
@@ -480,7 +582,7 @@ impl App {
                             if i > 0 {
                                 output.push_str(" | ");
                             }
-                            output.push_str(&val.to_string());
+                            output.push_str(&format!("{:width$}", val.to_string(), width = col_widths[i]));
                         }
                         output.push('\n');
                     }
@@ -492,7 +594,22 @@ impl App {
                         ));
                         output.push('\n');
                     }
+                    self.result_scroll_v = 0;
+                    self.result_scroll_h = 0;
                     self.query_results = output;
+                    self.query_columns = result.columns.iter().map(|c| c.name.clone()).collect();
+                    self.query_data = result
+                        .rows
+                        .iter()
+                        .map(|row| row.iter().map(|v| v.to_string()).collect())
+                        .collect();
+                    self.query_data_typed = result.rows.clone();
+                    self.query_column_info = result.columns.clone();
+                    self.query_col_widths = col_widths;
+                    self.inspector_scroll = 0;
+                    self.selected_row = 0;
+                    self.selected_col = 0;
+                    self.cell_edit_mode = CellEditMode::Inactive;
                     self.set_status(format!(
                         "Query returned {} rows in {:?}",
                         result.rows.len(),
@@ -501,6 +618,12 @@ impl App {
                 }
                 Err(e) => {
                     self.query_results = format!("Error: {}", e);
+                    self.query_columns.clear();
+                    self.query_data.clear();
+                    self.query_data_typed.clear();
+                    self.query_column_info.clear();
+                    self.query_col_widths.clear();
+                    self.cell_edit_mode = CellEditMode::Inactive;
                     self.set_status(format!("Query failed: {}", e));
                 }
             },
@@ -530,6 +653,458 @@ impl App {
         }
     }
 
+    fn handle_cell_edit_popup_key(&mut self, key: &KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => {
+                self.cell_edit_focus = match self.cell_edit_focus {
+                    CellEditFocus::Editor => CellEditFocus::Cancel,
+                    CellEditFocus::Cancel => CellEditFocus::Confirm,
+                    CellEditFocus::Confirm => CellEditFocus::Editor,
+                };
+                true
+            }
+            KeyCode::Up => {
+                self.cell_edit_focus = match self.cell_edit_focus {
+                    CellEditFocus::Editor => CellEditFocus::Confirm,
+                    CellEditFocus::Cancel => CellEditFocus::Editor,
+                    CellEditFocus::Confirm => CellEditFocus::Cancel,
+                };
+                true
+            }
+            KeyCode::Esc => {
+                self.cell_edit_mode = CellEditMode::Inactive;
+                self.set_status("Edit cancelled");
+                true
+            }
+            KeyCode::Enter => {
+                match self.cell_edit_focus {
+                    CellEditFocus::Cancel => {
+                        self.cell_edit_mode = CellEditMode::Inactive;
+                        self.set_status("Edit cancelled");
+                    }
+                    CellEditFocus::Confirm => {
+                        self.confirm_cell_edit();
+                    }
+                    CellEditFocus::Editor => {
+                        self.cell_edit_focus = CellEditFocus::Confirm;
+                    }
+                }
+                true
+            }
+            _ => {
+                if self.cell_edit_focus == CellEditFocus::Editor {
+                    self.cell_edit_input.handle_key(key);
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    fn handle_results_key(&mut self, key: &KeyEvent) -> bool {
+        if self.current_page != Page::QueryEditor
+            || self.focus != Focus::Main
+            || self.query_editor_focus != QueryEditorFocus::Results
+        {
+            return false;
+        }
+
+        if self.cell_edit_mode == CellEditMode::Editing {
+            self.handle_cell_edit_popup_key(key);
+            return true;
+        }
+
+        if self.query_data.is_empty() {
+            return false;
+        }
+
+        let data_height = self
+            .main_rect
+            .height
+            .saturating_sub(2)
+            .saturating_sub(2) as usize;
+
+        match key.code {
+            KeyCode::Tab | KeyCode::Right => {
+                self.inspector_edit_col = None;
+                if self.selected_col + 1 < self.query_columns.len() {
+                    self.selected_col += 1;
+                }
+                self.ensure_cell_visible(data_height);
+                true
+            }
+            KeyCode::BackTab | KeyCode::Left => {
+                self.inspector_edit_col = None;
+                if self.selected_col > 0 {
+                    self.selected_col -= 1;
+                }
+                self.ensure_cell_visible(data_height);
+                true
+            }
+            KeyCode::Down => {
+                self.inspector_edit_col = None;
+                if self.selected_row + 1 < self.query_data.len() {
+                    self.selected_row += 1;
+                }
+                self.ensure_cell_visible(data_height);
+                true
+            }
+            KeyCode::Up => {
+                self.inspector_edit_col = None;
+                if self.selected_row > 0 {
+                    self.selected_row -= 1;
+                }
+                self.ensure_cell_visible(data_height);
+                true
+            }
+            KeyCode::Enter => {
+                self.start_cell_edit();
+                true
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y')
+                if key.modifiers == KeyModifiers::NONE =>
+            {
+                self.copy_selected_cell();
+                true
+            }
+            KeyCode::Esc => {
+                if self.selected_row != 0 || self.selected_col != 0 {
+                    self.selected_row = 0;
+                    self.selected_col = 0;
+                    self.ensure_cell_visible(data_height);
+                    self.set_status("Selection cleared");
+                } else {
+                    self.query_editor_focus = QueryEditorFocus::Editor;
+                    self.set_status("Focus: Editor");
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn copy_selected_cell(&mut self) {
+        if self.selected_row < self.query_data.len()
+            && self.selected_col < self.query_columns.len()
+        {
+            let val = &self.query_data[self.selected_row][self.selected_col];
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.set_text(val.clone());
+            }
+            self.set_status(format!("Copied: {}", val));
+        }
+    }
+
+    fn handle_inspector_key(&mut self, key: &KeyEvent) -> bool {
+        if let Some(edit_col) = self.inspector_edit_col {
+            let visible_w = self.inspector_rect.width.saturating_sub(4) as usize;
+            match key.code {
+                KeyCode::Enter => {
+                    if self.selected_row < self.query_data.len()
+                        && edit_col < self.query_columns.len()
+                    {
+                        if self.inspector_saved_value.is_none() {
+                            let original =
+                                self.query_data[self.selected_row][edit_col].clone();
+                            self.inspector_saved_value =
+                                Some((self.selected_row, edit_col, original));
+                        }
+                        self.query_data[self.selected_row][edit_col] =
+                            self.inspector_edit_value.clone();
+                        if self.selected_row < self.query_data_typed.len()
+                            && edit_col < self.query_data_typed[self.selected_row].len()
+                        {
+                            self.query_data_typed[self.selected_row][edit_col] =
+                                Value::Text(self.inspector_edit_value.clone());
+                        }
+                    }
+                    self.inspector_edit_col = None;
+                    self.update_key_hints();
+                    self.set_status("Value updated");
+                    return true;
+                }
+                KeyCode::Esc => {
+                    self.inspector_edit_col = None;
+                    self.update_key_hints();
+                    self.set_status("Edit cancelled");
+                    return true;
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.inspector_edit_value.insert(self.inspector_edit_cursor, c);
+                    self.inspector_edit_cursor += 1;
+                    self.ensure_inspector_cursor_visible(visible_w);
+                    return true;
+                }
+                KeyCode::Backspace => {
+                    if self.inspector_edit_cursor > 0 {
+                        self.inspector_edit_cursor -= 1;
+                        self.inspector_edit_value.remove(self.inspector_edit_cursor);
+                        self.ensure_inspector_cursor_visible(visible_w);
+                    }
+                    return true;
+                }
+                KeyCode::Delete => {
+                    if self.inspector_edit_cursor < self.inspector_edit_value.len() {
+                        self.inspector_edit_value.remove(self.inspector_edit_cursor);
+                    }
+                    return true;
+                }
+                KeyCode::Left => {
+                    if self.inspector_edit_cursor > 0 {
+                        self.inspector_edit_cursor -= 1;
+                    } else if self.inspector_edit_scroll_h > 0 {
+                        self.inspector_edit_scroll_h = self.inspector_edit_scroll_h.saturating_sub(1);
+                    }
+                    self.ensure_inspector_cursor_visible(visible_w);
+                    return true;
+                }
+                KeyCode::Right => {
+                    if self.inspector_edit_cursor < self.inspector_edit_value.len() {
+                        self.inspector_edit_cursor += 1;
+                    } else {
+                        let max_scroll = self.inspector_edit_value.len().saturating_sub(visible_w);
+                        if self.inspector_edit_scroll_h as usize + 3 <= max_scroll {
+                            self.inspector_edit_scroll_h =
+                                (self.inspector_edit_scroll_h as usize + 3).min(max_scroll) as u16;
+                        }
+                    }
+                    self.ensure_inspector_cursor_visible(visible_w);
+                    return true;
+                }
+                KeyCode::Home => {
+                    self.inspector_edit_cursor = 0;
+                    self.inspector_edit_scroll_h = 0;
+                    return true;
+                }
+                KeyCode::End => {
+                    self.inspector_edit_cursor = self.inspector_edit_value.len();
+                    self.inspector_edit_scroll_h = self
+                        .inspector_edit_value
+                        .len()
+                        .saturating_sub(visible_w)
+                        .max(0) as u16;
+                    return true;
+                }
+                _ => {}
+            }
+            return true;
+        }
+
+        // Alt+Z undo
+        if key.code == KeyCode::Char('z') && key.modifiers == KeyModifiers::ALT {
+            if let Some((row, col, original)) = self.inspector_saved_value.take() {
+                if row < self.query_data.len() && col < self.query_columns.len() {
+                    self.query_data[row][col] = original.clone();
+                    if row < self.query_data_typed.len()
+                        && col < self.query_data_typed[row].len()
+                    {
+                        self.query_data_typed[row][col] = Value::Text(original);
+                    }
+                }
+                self.set_status("Value restored");
+            }
+            return true;
+        }
+
+        // Scroll keys when not editing
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let max_scroll = self
+                    .query_columns
+                    .len()
+                    .saturating_sub(self.inspector_rect.height as usize / 3)
+                    .saturating_sub(1)
+                    .max(0);
+                if self.inspector_scroll < max_scroll {
+                    self.inspector_scroll += 1;
+                }
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.inspector_scroll = self.inspector_scroll.saturating_sub(1);
+                true
+            }
+            KeyCode::Char('g') if key.modifiers == KeyModifiers::NONE => {
+                self.inspector_scroll = 0;
+                true
+            }
+            KeyCode::Char('G') if key.modifiers == KeyModifiers::NONE => {
+                self.inspector_scroll = self
+                    .query_columns
+                    .len()
+                    .saturating_sub(self.inspector_rect.height as usize / 3)
+                    .saturating_sub(1)
+                    .max(0);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn update_key_hints(&mut self) {
+        if self.focus == Focus::Inspector && self.current_page == Page::QueryEditor {
+            if self.inspector_edit_col.is_some() {
+                self.key_hints =
+                    " Esc:Cancel | Enter:Save | Alt+Z:Undo | Alt+H:Inspector".to_string();
+            } else {
+                self.key_hints =
+                    " j/k:Scroll | g/G:Top/Bot | Click:Edit | Alt+Z:Undo | Alt+H:Inspector"
+                        .to_string();
+            }
+        } else {
+            self.key_hints =
+                " q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector".to_string();
+        }
+    }
+
+    fn ensure_inspector_cursor_visible(&mut self, visible_w: usize) {
+        let cursor = self.inspector_edit_cursor;
+        let scroll = self.inspector_edit_scroll_h as usize;
+        if cursor < scroll {
+            self.inspector_edit_scroll_h = cursor as u16;
+        } else if cursor >= scroll + visible_w {
+            self.inspector_edit_scroll_h = (cursor.saturating_sub(visible_w) + 1) as u16;
+        }
+        let max_scroll = self.inspector_edit_value.len().saturating_sub(visible_w);
+        if self.inspector_edit_scroll_h as usize > max_scroll {
+            self.inspector_edit_scroll_h = max_scroll as u16;
+        }
+    }
+
+    fn start_cell_edit(&mut self) {
+        if self.selected_row < self.query_data.len()
+            && self.selected_col < self.query_columns.len()
+        {
+            let val = &self.query_data[self.selected_row][self.selected_col];
+            self.cell_edit_input = InputField::with_value("", val.clone());
+            self.cell_edit_focus = CellEditFocus::Editor;
+            self.cell_edit_mode = CellEditMode::Editing;
+        }
+    }
+
+    fn confirm_cell_edit(&mut self) {
+        let new_val = self.cell_edit_input.value.clone();
+        if self.selected_row < self.query_data.len()
+            && self.selected_col < self.query_columns.len()
+        {
+            let old_val = self.query_data[self.selected_row][self.selected_col].clone();
+            self.query_data[self.selected_row][self.selected_col] = new_val.clone();
+            self.cell_edit_mode = CellEditMode::Inactive;
+            self.set_status(format!(
+                "Cell [{}, {}] updated: \"{}\" -> \"{}\"",
+                self.selected_row, self.selected_col, old_val, new_val
+            ));
+            self.rebuild_query_results();
+        }
+    }
+
+    fn rebuild_query_results(&mut self) {
+        let mut output = String::new();
+        output.push('\n');
+
+        for (i, name) in self.query_columns.iter().enumerate() {
+            if i > 0 {
+                output.push_str(" | ");
+            }
+            output.push_str(&format!(
+                "{:width$}",
+                name,
+                width = self.query_col_widths[i]
+            ));
+        }
+        output.push('\n');
+        for (i, w) in self.query_col_widths.iter().enumerate() {
+            if i > 0 {
+                output.push_str("-+-");
+            }
+            for _ in 0..*w {
+                output.push('-');
+            }
+        }
+        output.push('\n');
+
+        for row in &self.query_data {
+            for (i, val) in row.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(" | ");
+                }
+                output.push_str(&format!(
+                    "{:width$}",
+                    val,
+                    width = self.query_col_widths[i]
+                ));
+            }
+            output.push('\n');
+        }
+        self.query_results = output;
+    }
+
+    fn ensure_cell_visible(&mut self, data_height: usize) {
+        if self.selected_row >= self.result_scroll_v + data_height {
+            self.result_scroll_v = self.selected_row.saturating_sub(data_height) + 1;
+        } else if self.selected_row < self.result_scroll_v {
+            self.result_scroll_v = self.selected_row;
+        }
+
+        let col_x: usize = self.query_col_widths[..self.selected_col]
+            .iter()
+            .copied()
+            .sum::<usize>()
+            + self.selected_col * 3;
+        let view_width = self.main_rect.width.saturating_sub(2) as usize;
+
+        if col_x < self.result_scroll_h as usize {
+            self.result_scroll_h = col_x as u16;
+        }
+        let col_end = col_x + self.query_col_widths[self.selected_col];
+        if col_end > self.result_scroll_h as usize + view_width && col_end > view_width {
+            self.result_scroll_h = (col_end - view_width) as u16;
+        }
+    }
+
+    fn mouse_to_cell(&self, mouse_col: u16, mouse_row: u16) -> Option<(usize, usize)> {
+        if self.query_data.is_empty() || self.query_columns.is_empty() {
+            return None;
+        }
+        let combined_h = self.main_rect.height;
+        let results_area_y = self.main_rect.y + combined_h * 25 / 100;
+        let inner_x = self.main_rect.x + 1;
+        let inner_y = results_area_y + 1;
+
+        let header_rows = 2u16;
+        let data_y = inner_y + header_rows;
+
+        if mouse_row < data_y {
+            return None;
+        }
+
+        let row_offset = (mouse_row - data_y) as usize;
+        let data_row = self.result_scroll_v + row_offset;
+        if data_row >= self.query_data.len() {
+            return None;
+        }
+
+        let mut char_x: i16 = inner_x as i16;
+        for (ci, &w) in self.query_col_widths.iter().enumerate() {
+            if ci > 0 {
+                char_x += 3;
+            }
+            let cell_start = char_x - self.result_scroll_h as i16;
+            let cell_end = cell_start + w as i16;
+            let mc = mouse_col as i16;
+            if mc >= cell_start && mc < cell_end {
+                return Some((data_row, ci));
+            }
+            char_x += w as i16;
+        }
+
+        None
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         self.status_message.clear();
 
@@ -543,6 +1118,14 @@ impl App {
         }
         if self.current_page == Page::Connections && self.handle_conn_key(&key) {
             return;
+        }
+        if self.handle_results_key(&key) {
+            return;
+        }
+        if self.focus == Focus::Inspector && self.current_page == Page::QueryEditor {
+            if self.handle_inspector_key(&key) || self.inspector_edit_col.is_some() {
+                return;
+            }
         }
 
         match key.code {
@@ -577,11 +1160,87 @@ impl App {
                     self.query_editor.set_value(&self.query_text);
                 }
             }
+            KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.current_page == Page::QueryEditor {
+                    self.result_scroll_h = self.result_scroll_h.saturating_sub(5);
+                }
+            }
+            KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.current_page == Page::QueryEditor {
+                    self.result_scroll_h = self.result_scroll_h.saturating_add(5);
+                }
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.current_page == Page::QueryEditor {
+                    self.result_scroll_v = self.result_scroll_v.saturating_sub(5);
+                }
+            }
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.current_page == Page::QueryEditor {
+                    self.result_scroll_v = self.result_scroll_v.saturating_add(5);
+                }
+            }
+            KeyCode::Char('h') if key.modifiers == KeyModifiers::CONTROL => {
+                self.cycle_focus_reverse();
+                self.set_status(format!("Focus: {:?}", self.focus));
+            }
+            // Ctrl+H maps to Backspace on many terminals in raw mode
+            KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
+                self.cycle_focus_reverse();
+                self.set_status(format!("Focus: {:?}", self.focus));
+            }
+            KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                self.cycle_focus();
+                self.set_status(format!("Focus: {:?}", self.focus));
+            }
+            KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.current_page == Page::QueryEditor && self.focus == Focus::Main
+                    && self.query_editor_focus == QueryEditorFocus::Editor
+                {
+                    self.query_editor_focus = QueryEditorFocus::Results;
+                    self.set_status("Focus: Results");
+                }
+            }
+            // Ctrl+J maps to Enter on many terminals in raw mode
+            KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
+                if self.current_page == Page::QueryEditor && self.focus == Focus::Main
+                    && self.query_editor_focus == QueryEditorFocus::Editor
+                {
+                    self.query_editor_focus = QueryEditorFocus::Results;
+                    self.set_status("Focus: Results");
+                }
+            }
+            KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
+                if self.current_page == Page::QueryEditor && self.focus == Focus::Main
+                    && self.query_editor_focus == QueryEditorFocus::Results
+                {
+                    self.query_editor_focus = QueryEditorFocus::Editor;
+                    self.set_status("Focus: Editor");
+                }
+            }
+            KeyCode::Char('h') if key.modifiers == KeyModifiers::ALT => {
+                self.show_inspector = !self.show_inspector;
+                self.inspector_scroll = 0;
+                if !self.show_inspector && self.focus == Focus::Inspector {
+                    self.focus = Focus::Main;
+                    self.query_editor_focus = QueryEditorFocus::Results;
+                }
+                self.update_key_hints();
+                self.set_status(if self.show_inspector {
+                    "Inspector: shown"
+                } else {
+                    "Inspector: hidden"
+                });
+            }
             _ => {}
         }
+        self.update_key_hints();
     }
 
     fn handle_sidebar_key(&mut self, key: &KeyEvent) -> bool {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return false;
+        }
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.explorer_tree.select_down();
@@ -591,7 +1250,7 @@ impl App {
                 self.explorer_tree.select_up();
                 true
             }
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+            KeyCode::Char('o') | KeyCode::Right => {
                 let id = self.explorer_tree.selected_id();
                 if let Some(ref id) = id {
                     let is_expanded = self.explorer_tree.is_item_expanded(id);
@@ -640,6 +1299,9 @@ impl App {
     }
 
     fn handle_conn_browse_key(&mut self, key: &KeyEvent) -> bool {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return false;
+        }
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.conn_list_selected + 1 < self.connections.len() {
@@ -801,25 +1463,45 @@ impl App {
             MouseEventKind::ScrollDown => {
                 if self.sidebar_rect.contains((col, row).into()) {
                     self.explorer_tree.select_down();
+                } else if self.current_page == Page::QueryEditor
+                    && self.main_rect.contains((col, row).into())
+                {
+                    self.result_scroll_v = self.result_scroll_v.saturating_add(1);
                 } else if self.main_rect.contains((col, row).into())
                     && self.current_page == Page::Connections
+                    && self.conn_list_selected + 1 < self.connections.len()
                 {
-                    if self.conn_list_selected + 1 < self.connections.len() {
-                        self.conn_list_selected += 1;
-                        self.adjust_conn_scroll();
-                    }
+                    self.conn_list_selected += 1;
+                    self.adjust_conn_scroll();
                 }
             }
             MouseEventKind::ScrollUp => {
                 if self.sidebar_rect.contains((col, row).into()) {
                     self.explorer_tree.select_up();
+                } else if self.current_page == Page::QueryEditor
+                    && self.main_rect.contains((col, row).into())
+                {
+                    self.result_scroll_v = self.result_scroll_v.saturating_sub(1);
                 } else if self.main_rect.contains((col, row).into())
                     && self.current_page == Page::Connections
+                    && self.conn_list_selected > 0
                 {
-                    if self.conn_list_selected > 0 {
-                        self.conn_list_selected -= 1;
-                        self.adjust_conn_scroll();
-                    }
+                    self.conn_list_selected -= 1;
+                    self.adjust_conn_scroll();
+                }
+            }
+            MouseEventKind::ScrollLeft => {
+                if self.current_page == Page::QueryEditor
+                    && self.main_rect.contains((col, row).into())
+                {
+                    self.result_scroll_h = self.result_scroll_h.saturating_sub(5);
+                }
+            }
+            MouseEventKind::ScrollRight => {
+                if self.current_page == Page::QueryEditor
+                    && self.main_rect.contains((col, row).into())
+                {
+                    self.result_scroll_h = self.result_scroll_h.saturating_add(5);
                 }
             }
             MouseEventKind::Down(_) => {
@@ -838,7 +1520,7 @@ impl App {
                                     let table_name = id.strip_prefix("table:").unwrap().to_string();
                                     // Strip schema prefix if present (e.g. "public.users" -> "users")
                                     let short = table_name.rsplit('.').next().unwrap_or(&table_name);
-                                    let query = format!("SELECT * FROM \"{}\";\n", short);
+                                    let query = format!("SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n", short);
                                     self.pending_action = PendingAction::OpenQuery(query);
                                 } else {
                                     self.explorer_tree.toggle_selected();
@@ -846,17 +1528,74 @@ impl App {
                             }
                         }
                     }
-                } else if self.inspector_rect.contains((col, row).into()) {
-                    self.focus = Focus::Inspector;
-                } else if self.main_rect.contains((col, row).into()) {
+                } else if self.current_page == Page::QueryEditor {
                     let is_double = self.is_double_click(col, row);
-                    if self.current_page == Page::QueryEditor && is_double {
-                        let editor_bottom = self.main_rect.y + self.main_rect.height * 33 / 100;
-                        if row < editor_bottom {
+                    let combined_h = self.main_rect.height;
+                    let editor_bottom = self.main_rect.y + combined_h * 25 / 100;
+                    let inspector_left = self.main_rect.x + self.main_rect.width;
+
+                    if col >= inspector_left {
+                        self.focus = Focus::Inspector;
+                        self.update_key_hints();
+                        self.inspector_edit_col = None;
+                        let inner_y = self.inspector_rect.y + 1;
+                        let inner_x = self.inspector_rect.x + 1;
+                        let inner_h = self.inspector_rect.height.saturating_sub(2);
+                        if row >= inner_y && row < inner_y + inner_h {
+                            let field_offset = (row - inner_y) / 3;
+                            let row_in_field = (row - inner_y) % 3;
+                            let actual_col =
+                                self.inspector_scroll + field_offset as usize;
+                            if row_in_field == 1
+                                && actual_col < self.query_columns.len()
+                            {
+                                let val = self.query_data
+                                    .get(self.selected_row)
+                                    .and_then(|r| r.get(actual_col))
+                                    .cloned()
+                                    .unwrap_or_default();
+                                self.inspector_edit_col = Some(actual_col);
+                                self.inspector_edit_value = val;
+                                self.inspector_edit_scroll_h = 0;
+                                let click_col_offset = col.saturating_sub(inner_x);
+                                let cursor = click_col_offset as usize;
+                                self.inspector_edit_cursor = cursor
+                                    .min(self.inspector_edit_value.len());
+                            }
+                        }
+                    } else if row < editor_bottom {
+                        self.focus = Focus::Main;
+                        self.update_key_hints();
+                        self.query_editor_focus = QueryEditorFocus::Editor;
+                        if is_double {
                             self.editing_query = true;
                             self.query_editor.set_value(&self.query_text);
                         }
-                    } else if self.current_page == Page::Connections
+                    } else {
+                        self.inspector_edit_col = None;
+                        self.focus = Focus::Main;
+                        self.update_key_hints();
+                        self.query_editor_focus = QueryEditorFocus::Results;
+                        if let Some((cell_row, cell_col)) = self.mouse_to_cell(col, row) {
+                            self.selected_row = cell_row;
+                            self.selected_col = cell_col;
+                            let data_height = self
+                                .main_rect
+                                .height
+                                .saturating_sub(2)
+                                .saturating_sub(2) as usize;
+                            self.ensure_cell_visible(data_height);
+                            if is_double {
+                                self.start_cell_edit();
+                            }
+                        }
+                    }
+                } else if self.inspector_rect.contains((col, row).into()) {
+                    self.focus = Focus::Inspector;
+                    self.update_key_hints();
+                } else if self.main_rect.contains((col, row).into()) {
+                    let is_double = self.is_double_click(col, row);
+                    if self.current_page == Page::Connections
                         && self.conn_page_mode == ConnPageMode::Browse
                     {
                         self.focus = Focus::Main;
@@ -882,6 +1621,8 @@ impl App {
             }
             _ => {}
         }
+        self.update_key_hints();
+        self.clamp_result_scroll();
     }
 
     fn is_double_click(&mut self, col: u16, row: u16) -> bool {
@@ -990,15 +1731,88 @@ impl App {
             self.conn_page_mode = ConnPageMode::Browse;
         }
         self.current_page = page;
+        self.update_key_hints();
         self.set_status(format!("Switched to {}", page.title()));
     }
 
     fn cycle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::Sidebar => Focus::Main,
-            Focus::Main => Focus::Inspector,
-            Focus::Inspector => Focus::Sidebar,
-        };
+        if self.current_page == Page::QueryEditor {
+            match self.focus {
+                Focus::Sidebar => {
+                    self.focus = Focus::Main;
+                    self.query_editor_focus = QueryEditorFocus::Editor;
+                }
+                Focus::Main => match self.query_editor_focus {
+                    QueryEditorFocus::Editor => {
+                        self.query_editor_focus = QueryEditorFocus::Results;
+                    }
+                    QueryEditorFocus::Results => {
+                        if self.show_inspector {
+                            self.focus = Focus::Inspector;
+                        } else {
+                            self.focus = Focus::Sidebar;
+                        }
+                    }
+                },
+                Focus::Inspector => {
+                    self.focus = Focus::Sidebar;
+                }
+            }
+        } else {
+            self.focus = match self.focus {
+                Focus::Sidebar => Focus::Main,
+                Focus::Main => {
+                    if self.show_inspector {
+                        Focus::Inspector
+                    } else {
+                        Focus::Sidebar
+                    }
+                }
+                Focus::Inspector => Focus::Sidebar,
+            };
+        }
+        self.update_key_hints();
+        self.set_status(format!("Focus: {:?}", self.focus));
+    }
+
+    fn cycle_focus_reverse(&mut self) {
+        if self.current_page == Page::QueryEditor {
+            match self.focus {
+                Focus::Sidebar => {
+                    if self.show_inspector {
+                        self.focus = Focus::Inspector;
+                    } else {
+                        self.focus = Focus::Main;
+                        self.query_editor_focus = QueryEditorFocus::Results;
+                    }
+                }
+                Focus::Inspector => {
+                    self.focus = Focus::Main;
+                    self.query_editor_focus = QueryEditorFocus::Results;
+                }
+                Focus::Main => match self.query_editor_focus {
+                    QueryEditorFocus::Results => {
+                        self.query_editor_focus = QueryEditorFocus::Editor;
+                    }
+                    QueryEditorFocus::Editor => {
+                        self.focus = Focus::Sidebar;
+                    }
+                },
+            }
+        } else {
+            self.focus = match self.focus {
+                Focus::Sidebar => {
+                    if self.show_inspector {
+                        Focus::Inspector
+                    } else {
+                        Focus::Main
+                    }
+                }
+                Focus::Main => Focus::Sidebar,
+                Focus::Inspector => Focus::Main,
+            };
+        }
+        self.update_key_hints();
         self.set_status(format!("Focus: {:?}", self.focus));
     }
 }

@@ -273,6 +273,8 @@ pub fn render_tree(frame: &mut Frame, area: Rect, state: &mut TreeState, focused
         };
         let label = format!("{}{}{}", indent, icon, item.label);
 
+        let is_field = item.id.starts_with("column:");
+
         let style = if is_selected && focused {
             Style::default()
                 .fg(Color::Black)
@@ -282,6 +284,8 @@ pub fn render_tree(frame: &mut Frame, area: Rect, state: &mut TreeState, focused
             Style::default()
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD)
+        } else if is_field {
+            Style::default().fg(Color::Cyan)
         } else {
             Style::default()
         };

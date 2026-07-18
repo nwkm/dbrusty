@@ -104,10 +104,8 @@ cargo run --release
 | Type | Filter results by fuzzy match |
 | `Enter` | Jump to selected result |
 | `Esc` | Close search |
-| `j` / `Down` | Select next result |
-| `k` / `Up` | Select previous result |
-| `g` | Go to first result |
-| `G` | Go to last result |
+| `Down` / `Ctrl+N` | Select next result |
+| `Up` / `Ctrl+P` | Select previous result |
 | `PageUp` | Scroll up one page |
 | `PageDown` | Scroll down one page |
 

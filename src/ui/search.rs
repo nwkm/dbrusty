@@ -72,6 +72,16 @@ impl GlobalSearchState {
         }
     }
 
+    fn source_priority(source: &SearchSource) -> usize {
+        match source {
+            SearchSource::Results => 0,
+            SearchSource::Metadata => 1,
+            SearchSource::Explorer => 2,
+            SearchSource::Query => 3,
+            SearchSource::QueryHistory => 4,
+        }
+    }
+
     pub fn filter(&mut self) {
         let query = self.input.value.trim();
         if query.is_empty() {
@@ -81,17 +91,18 @@ impl GlobalSearchState {
             return;
         }
 
-        let mut scored: Vec<(i64, usize)> = Vec::new();
+        let mut scored: Vec<(usize, i64, usize)> = Vec::new();
         for (i, result) in self.all_results.iter().enumerate() {
             if let Some((score, _)) = fuzzy_match(query, &result.label) {
-                scored.push((score, i));
+                let priority = Self::source_priority(&result.source);
+                scored.push((priority, score, i));
             }
         }
 
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
 
         let mut new_results = Vec::with_capacity(scored.len());
-        for (_, idx) in scored {
+        for (_, _, idx) in scored {
             let result = self.all_results[idx].clone();
             new_results.push(result);
         }
@@ -473,7 +484,7 @@ pub fn handle_global_search_key(app: &mut App, key: &crossterm::event::KeyEvent)
             jump_to_result(app, &result);
             true
         }
-        KeyCode::Up | KeyCode::Char('k') if key.modifiers == KeyModifiers::NONE => {
+        KeyCode::Up | KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
             if state.selected > 0 {
                 state.selected -= 1;
                 if state.selected < state.scroll_offset {
@@ -482,7 +493,7 @@ pub fn handle_global_search_key(app: &mut App, key: &crossterm::event::KeyEvent)
             }
             true
         }
-        KeyCode::Down | KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
+        KeyCode::Down | KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
             if state.selected + 1 < state.results.len() {
                 state.selected += 1;
                 let visible = (app
@@ -528,24 +539,6 @@ pub fn handle_global_search_key(app: &mut App, key: &crossterm::event::KeyEvent)
             }
             true
         }
-        KeyCode::Char('g') if key.modifiers == KeyModifiers::NONE => {
-            state.selected = 0;
-            state.scroll_offset = 0;
-            true
-        }
-        KeyCode::Char('G') if key.modifiers == KeyModifiers::NONE => {
-            if !state.results.is_empty() {
-                state.selected = state.results.len() - 1;
-                let visible = (app
-                    .main_rect
-                    .height
-                    .saturating_sub(4)
-                    .min(24)
-                    .saturating_sub(4)) as usize;
-                state.scroll_offset = state.selected.saturating_sub(visible).saturating_add(1);
-            }
-            true
-        }
         _ => {
             if state.input.handle_key(key) {
                 state.filter();
@@ -559,37 +552,28 @@ pub fn handle_global_search_key(app: &mut App, key: &crossterm::event::KeyEvent)
 
 fn jump_to_result(app: &mut App, result: &SearchResult) {
     match result.source {
-        SearchSource::Explorer => {
+        SearchSource::Explorer | SearchSource::Metadata => {
             app.current_page = crate::app::Page::Explorer;
             app.focus = crate::app::Focus::Sidebar;
             app.set_status(format!("Navigated to: {}", result.label));
         }
-        SearchSource::Metadata => {
-            app.current_page = crate::app::Page::Explorer;
-            app.focus = crate::app::Focus::Sidebar;
-            app.set_status(format!("Navigated to metadata: {}", result.label));
-        }
         SearchSource::Query => {
             app.current_page = crate::app::Page::QueryEditor;
+            app.focus = crate::app::Focus::Main;
             app.query_editor_focus = crate::app::QueryEditorFocus::Editor;
-            if !result.label.is_empty() {
-                app.query_text = result.label.clone();
-                app.query_editor.set_value(&result.label);
-            }
             app.set_status(format!("Jumped to query line {}", result.line_index + 1));
         }
         SearchSource::Results => {
             app.current_page = crate::app::Page::QueryEditor;
+            app.focus = crate::app::Focus::Main;
             app.query_editor_focus = crate::app::QueryEditorFocus::Results;
             app.selected_row = result.line_index;
+            app.selected_col = 0;
             app.set_status(format!("Jumped to result row {}", result.line_index + 1));
         }
         SearchSource::QueryHistory => {
-            if !result.label.is_empty() {
-                app.query_text = result.label.clone();
-                app.query_editor.set_value(&result.label);
-            }
             app.current_page = crate::app::Page::QueryEditor;
+            app.focus = crate::app::Focus::Main;
             app.query_editor_focus = crate::app::QueryEditorFocus::Editor;
             app.set_status("Loaded query from history");
         }

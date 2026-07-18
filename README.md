@@ -94,7 +94,24 @@ cargo run --release
 | `?` | Help |
 | `Tab` | Cycle focus forward |
 | `Shift+Tab` | Cycle focus reverse |
+| `Alt+F` | Global search (fuzzy-find across all panes) |
 | `Alt+H` | Toggle Inspector pane |
+
+### Global Search (Alt+F)
+
+| Key | Action |
+|-----|--------|
+| Type | Filter results by fuzzy match |
+| `Enter` | Jump to selected result |
+| `Esc` | Close search |
+| `j` / `Down` | Select next result |
+| `k` / `Up` | Select previous result |
+| `g` | Go to first result |
+| `G` | Go to last result |
+| `PageUp` | Scroll up one page |
+| `PageDown` | Scroll down one page |
+
+Searches across: Explorer tree items, table/column metadata, query editor lines, and query result cells. Results are color-coded by source.
 
 ### Sidebar (Database Explorer)
 

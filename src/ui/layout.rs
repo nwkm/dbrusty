@@ -48,6 +48,10 @@ pub fn render_layout(frame: &mut Frame, app: &mut App) {
         render_inspector(frame, inspector_area, app);
     }
     render_footer(frame, footer_area, app);
+
+    if app.global_search.is_some() && app.global_search.as_ref().unwrap().is_open {
+        crate::ui::search::render_global_search(frame, area, app);
+    }
 }
 
 fn render_topbar(frame: &mut Frame, area: Rect, app: &App) {

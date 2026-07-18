@@ -268,6 +268,7 @@ pub struct App {
     pub query_editor_focus: QueryEditorFocus,
     pub result_scroll_v: usize,
     pub result_scroll_h: u16,
+    pub global_search: Option<crate::ui::search::GlobalSearchState>,
 }
 
 impl App {
@@ -362,6 +363,7 @@ impl App {
             query_editor_focus: QueryEditorFocus::Editor,
             result_scroll_v: 0,
             result_scroll_h: 0,
+            global_search: None,
         };
         app.set_status("Ready");
         app
@@ -1092,6 +1094,12 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         self.status_message.clear();
 
+        if self.global_search.is_some() && self.global_search.as_ref().unwrap().is_open {
+            if crate::ui::search::handle_global_search_key(self, &key) {
+                return;
+            }
+        }
+
         if self.editing_query && self.current_page == Page::QueryEditor {
             self.handle_query_edit_key(&key);
             return;
@@ -1173,6 +1181,13 @@ impl App {
                 self.set_status(format!("Focus: {:?}", self.focus));
             }
 
+            KeyCode::Char('f') if key.modifiers == KeyModifiers::ALT => {
+                let mut state = crate::ui::search::GlobalSearchState::new();
+                state.is_open = true;
+                self.global_search = Some(state);
+                crate::ui::search::rebuild_search_index(self);
+                self.set_status("Global Search — type to filter, Enter to jump, Esc to close");
+            }
             KeyCode::Char('h') if key.modifiers == KeyModifiers::ALT => {
                 self.show_inspector = !self.show_inspector;
                 self.inspector_scroll = 0;

@@ -96,7 +96,31 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
                 sidebar::render_generic_detail(frame, area, "Indexes", name, focused);
             }
             "column" => {
-                sidebar::render_generic_detail(frame, area, "Column", name, focused);
+                let mut parts = name.rsplitn(2, '.');
+                let col_name = parts.next().unwrap_or(name);
+                let table_key = parts.next().unwrap_or("");
+                let columns = app.metadata_cache.get_columns(table_key);
+                if let Some(columns) = columns {
+                    if let Some(col) = columns.iter().find(|c| c.name == col_name) {
+                        sidebar::render_column_detail(frame, area, name, col, focused);
+                    } else {
+                        sidebar::render_generic_detail(
+                            frame,
+                            area,
+                            "Column",
+                            &format!("Column \"{}\" not found in metadata", col_name),
+                            focused,
+                        );
+                    }
+                } else {
+                    sidebar::render_generic_detail(
+                        frame,
+                        area,
+                        "Column",
+                        &format!("Table metadata for \"{}\" not loaded", table_key),
+                        focused,
+                    );
+                }
             }
             "db" => {
                 sidebar::render_generic_detail(frame, area, "Database", name, focused);

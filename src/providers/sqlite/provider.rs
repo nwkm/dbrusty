@@ -56,6 +56,7 @@ fn columns_from_row(row: &sqlx::sqlite::SqliteRow) -> Vec<ColumnInfo> {
             type_name: format!("{:?}", col.type_info()),
             nullable: true,
             is_pk: false,
+            is_fk: false,
             default: None,
             is_auto_increment: false,
         })
@@ -185,6 +186,7 @@ impl DatabaseProvider for SqliteProvider {
                     type_name,
                     nullable: !notnull,
                     is_pk: pk != 0,
+                    is_fk: false,
                     default: dflt_value,
                     is_auto_increment: false,
                 }

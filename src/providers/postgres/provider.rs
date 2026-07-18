@@ -66,6 +66,7 @@ fn columns_from_row(row: &PgRow) -> Vec<ColumnInfo> {
             type_name: format!("{:?}", col.type_info()),
             nullable: true,
             is_pk: false,
+            is_fk: false,
             default: None,
             is_auto_increment: false,
         })
@@ -258,11 +259,12 @@ impl DatabaseProvider for PostgresProvider {
              c.udt_name AS type_name, \
              c.is_nullable, \
              CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END AS is_pk, \
+             CASE WHEN fk.column_name IS NOT NULL THEN true ELSE false END AS is_fk, \
              c.column_default AS default_value, \
              CASE WHEN c.column_default LIKE 'nextval%%' THEN true ELSE false END AS is_auto_inc \
              FROM information_schema.columns c \
              LEFT JOIN ( \
-             SELECT ku.column_name, ku.table_name, ku.table_schema \
+             SELECT ku.column_name \
              FROM information_schema.table_constraints tc \
              JOIN information_schema.key_column_usage ku \
              ON tc.constraint_name = ku.constraint_name \
@@ -272,6 +274,17 @@ impl DatabaseProvider for PostgresProvider {
              AND tc.table_schema = $1 \
              AND tc.table_name = $2 \
              ) pk ON c.column_name = pk.column_name \
+             LEFT JOIN ( \
+             SELECT ku.column_name \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.key_column_usage ku \
+             ON tc.constraint_name = ku.constraint_name \
+             AND tc.table_schema = ku.table_schema \
+             AND tc.table_name = ku.table_name \
+             WHERE tc.constraint_type = 'FOREIGN KEY' \
+             AND tc.table_schema = $1 \
+             AND tc.table_name = $2 \
+             ) fk ON c.column_name = fk.column_name \
              WHERE c.table_schema = $1 AND c.table_name = $2 \
              ORDER BY c.ordinal_position",
         )
@@ -288,6 +301,7 @@ impl DatabaseProvider for PostgresProvider {
                 let type_name: String = r.get("type_name");
                 let nullable_str: String = r.get("is_nullable");
                 let is_pk: bool = r.get("is_pk");
+                let is_fk: bool = r.get("is_fk");
                 let default_value: Option<String> = r.get("default_value");
                 let is_auto_inc: bool = r.get("is_auto_inc");
                 ColumnInfo {
@@ -296,6 +310,7 @@ impl DatabaseProvider for PostgresProvider {
                     type_name,
                     nullable: nullable_str == "YES",
                     is_pk,
+                    is_fk,
                     default: default_value,
                     is_auto_increment: is_auto_inc,
                 }

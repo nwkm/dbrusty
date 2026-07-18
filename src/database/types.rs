@@ -12,6 +12,7 @@ pub struct ColumnInfo {
     pub type_name: String,
     pub nullable: bool,
     pub is_pk: bool,
+    pub is_fk: bool,
     pub default: Option<String>,
     pub is_auto_increment: bool,
 }

@@ -1,8 +1,8 @@
 use ratatui::{
-    layout::Rect,
-    style::{Color, Style},
-    text::Line,
-    widgets::{Block, Borders, Paragraph},
+    layout::{Constraint, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Frame,
 };
 
@@ -198,34 +198,157 @@ pub fn render_table_detail(
 ) {
     let border_color = if focused { Color::Cyan } else { Color::White };
     let block = Block::default()
-        .title(format!(" Table: {} ", label))
+        .title(format!(" Table: {}  [{} columns] ", label, columns.len()))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines = vec![
-        Line::from(format!(" Columns ({})", columns.len())),
-        Line::from(String::new()),
+    let name_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let type_style = Style::default().fg(Color::Yellow);
+    let pk_style = Style::default().fg(Color::Green);
+    let fk_style = Style::default().fg(Color::Magenta);
+    let no_style = Style::default().fg(Color::DarkGray);
+    let null_style = Style::default().fg(Color::Red);
+    let def_style = Style::default().fg(Color::Blue);
+
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Name", header_style)),
+        Cell::from(Span::styled("Type", header_style)),
+        Cell::from(Span::styled("Nullable", header_style)),
+        Cell::from(Span::styled("PK", header_style)),
+        Cell::from(Span::styled("FK", header_style)),
+        Cell::from(Span::styled("Default", header_style)),
+    ]);
+
+    let rows: Vec<Row> = columns
+        .iter()
+        .map(|col| {
+            let nullable = if col.nullable {
+                Span::styled("Yes", null_style)
+            } else {
+                Span::styled("No", no_style)
+            };
+            let pk = if col.is_pk {
+                Span::styled("PK", pk_style)
+            } else {
+                Span::styled("—", no_style)
+            };
+            let fk = if col.is_fk {
+                Span::styled("FK", fk_style)
+            } else {
+                Span::styled("—", no_style)
+            };
+            let default_str = col
+                .default
+                .as_deref()
+                .map(|d| Span::styled(d, def_style))
+                .unwrap_or_else(|| Span::styled("NULL", no_style));
+
+            Row::new(vec![
+                Cell::from(Span::styled(&col.name, name_style)),
+                Cell::from(Span::styled(&col.type_name, type_style)),
+                Cell::from(nullable),
+                Cell::from(pk),
+                Cell::from(fk),
+                Cell::from(default_str),
+            ])
+        })
+        .collect();
+
+    let widths = vec![
+        Constraint::Length(20),
+        Constraint::Length(20),
+        Constraint::Length(10),
+        Constraint::Length(4),
+        Constraint::Length(4),
+        Constraint::Fill(1),
     ];
 
-    for col in columns {
-        let pk = if col.is_pk { " PK" } else { "" };
-        let null = if col.nullable { "" } else { " NOT NULL" };
-        let def = col
-            .default
-            .as_ref()
-            .map(|d| format!(" DEFAULT {}", d))
-            .unwrap_or_default();
-        lines.push(Line::from(format!(
-            "  {}  {}  {}{}{}",
-            col.name, col.type_name, pk, null, def
-        )));
-    }
+    let table = Table::new(rows, widths).header(header).column_spacing(2);
 
-    let text = ratatui::text::Text::from(lines);
-    frame.render_widget(Paragraph::new(text), inner);
+    frame.render_widget(table, inner);
+}
+
+pub fn render_column_detail(
+    frame: &mut Frame,
+    area: Rect,
+    table_label: &str,
+    col: &ColumnInfo,
+    focused: bool,
+) {
+    let border_color = if focused { Color::Cyan } else { Color::White };
+    let block = Block::default()
+        .title(format!(" Column: {} ", table_label))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let yes = Style::default().fg(Color::Green);
+    let no = Style::default().fg(Color::Red);
+
+    let pk = if col.is_pk { "Yes" } else { "No" };
+    let fk = if col.is_fk { "Yes" } else { "No" };
+    let nullable = if col.nullable { "Yes" } else { "No" };
+    let auto_inc = if col.is_auto_increment { "Yes" } else { "No" };
+    let default_str = col.default.as_deref().unwrap_or("NULL");
+
+    let rows = vec![
+        Row::new(vec![
+            Cell::from(Span::styled("Name", bold)),
+            Cell::from(col.name.as_str()),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::styled("Type", bold)),
+            Cell::from(col.type_name.as_str()),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::styled("Primary Key", bold)),
+            Cell::from(Span::styled(pk, if col.is_pk { yes } else { no })),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::styled("Foreign Key", bold)),
+            Cell::from(Span::styled(fk, if col.is_fk { yes } else { no })),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::styled("Default", bold)),
+            Cell::from(default_str),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::styled("Nullable", bold)),
+            Cell::from(Span::styled(nullable, if col.nullable { yes } else { no })),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::styled("Auto Increment", bold)),
+            Cell::from(Span::styled(
+                auto_inc,
+                if col.is_auto_increment { yes } else { no },
+            )),
+        ]),
+    ];
+
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Property", header_style)),
+        Cell::from(Span::styled("Value", header_style)),
+    ]);
+
+    let table = Table::new(rows, vec![Constraint::Length(18), Constraint::Fill(1)])
+        .header(header)
+        .column_spacing(2);
+
+    frame.render_widget(table, inner);
 }
 
 #[allow(dead_code)]

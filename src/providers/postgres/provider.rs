@@ -104,15 +104,19 @@ impl DatabaseProvider for PostgresProvider {
         let password = match &config.password {
             Some(p) if !p.is_empty() => p.clone(),
             _ => {
-                match crate::storage::credentials::get_password(&config.password_key()) {
-                    Ok(Some(p)) => p,
-                    Ok(None) => {
-                        tracing::warn!("No password found in keychain for {}", config.name);
-                        String::new()
-                    }
-                    Err(e) => {
-                        tracing::warn!("Keychain error for {}: {}", config.name, e);
-                        String::new()
+                if config.username.is_empty() {
+                    String::new()
+                } else {
+                    match crate::storage::credentials::get_password(&config.password_key()) {
+                        Ok(Some(p)) => p,
+                        Ok(None) => {
+                            tracing::warn!("No password found in keychain for {}", config.name);
+                            String::new()
+                        }
+                        Err(e) => {
+                            tracing::warn!("Keychain error for {}: {}", config.name, e);
+                            String::new()
+                        }
                     }
                 }
             }

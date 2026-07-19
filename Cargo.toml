@@ -28,3 +28,6 @@ keyring = "3"
 async-trait = "0.1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "chrono"] }
 arboard = "3"
+mongodb = { version = "3", features = ["bson-3"] }
+bson = { version = "3", features = ["serde", "serde_json-1"] }
+rand = "0.9"

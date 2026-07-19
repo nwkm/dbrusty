@@ -128,10 +128,17 @@ impl ConnectionConfig {
             }
             DatabaseType::MongoDB => {
                 let pw = password.unwrap_or("");
-                Ok(format!(
-                    "mongodb://{}:{}@{}:{}/{}",
-                    self.username, pw, self.host, self.port, self.database
-                ))
+                if self.username.is_empty() && pw.is_empty() {
+                    Ok(format!(
+                        "mongodb://{}:{}/{}",
+                        self.host, self.port, self.database
+                    ))
+                } else {
+                    Ok(format!(
+                        "mongodb://{}:{}@{}:{}/{}",
+                        self.username, pw, self.host, self.port, self.database
+                    ))
+                }
             }
             DatabaseType::Redis => {
                 let pw = password.unwrap_or("");

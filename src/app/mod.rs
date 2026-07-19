@@ -24,6 +24,7 @@ use crate::database::provider::DatabaseProvider;
 use crate::database::result::Value;
 use crate::database::types::ColumnInfo;
 use crate::models::connection::{ConnectionConfig, DatabaseType};
+use crate::providers::mongodb::MongoProvider;
 use crate::providers::postgres::PostgresProvider;
 use crate::providers::sqlite::SqliteProvider;
 use crate::storage;
@@ -204,6 +205,7 @@ impl ConnectionFormState {
 pub enum PendingAction {
     None,
     Connect(ConnectionConfig),
+    Disconnect(Uuid),
     LoadColumns { table: String },
     OpenQuery(String),
     RunQuery(String),
@@ -272,6 +274,15 @@ pub struct App {
 }
 
 impl App {
+    fn active_db_type(&self) -> Option<DatabaseType> {
+        self.pool.active_id.and_then(|id| {
+            self.connections
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.db_type.clone())
+        })
+    }
+
     pub fn set_status(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
         self.log_entries.push(msg.clone());
@@ -425,6 +436,25 @@ impl App {
             PendingAction::RunQuery(sql) => {
                 self.run_query(&sql).await;
             }
+            PendingAction::Disconnect(id) => {
+                if let Some(provider) = self.pool.get_mut(id) {
+                    let name = self
+                        .connections
+                        .iter()
+                        .find(|c| c.id == id)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    if let Err(e) = provider.disconnect().await {
+                        self.set_status(format!("Error disconnecting: {}", e));
+                    } else {
+                        self.pool.unregister(id);
+                        self.explorer_tree = TreeState::new(Vec::new());
+                        self.query_text.clear();
+                        self.query_editor.set_value("");
+                        self.set_status(format!("Disconnected from \"{}\"", name));
+                    }
+                }
+            }
             PendingAction::None => {}
         }
     }
@@ -433,6 +463,7 @@ impl App {
         let mut provider: Box<dyn DatabaseProvider> = match conn.db_type {
             DatabaseType::Postgres => Box::new(PostgresProvider::new()),
             DatabaseType::SQLite => Box::new(SqliteProvider::new()),
+            DatabaseType::MongoDB => Box::new(MongoProvider::new()),
             _ => {
                 self.set_status(format!(
                     "\"{}\" is {} (not yet supported).",
@@ -447,6 +478,8 @@ impl App {
             Ok(()) => {
                 self.pool.register(conn.id, provider);
                 self.pool.set_active(conn.id);
+                self.query_text.clear();
+                self.query_editor.set_value("");
 
                 if let Some(provider) = self.pool.get_active() {
                     let databases = provider.get_databases().await.unwrap_or_default();
@@ -456,7 +489,11 @@ impl App {
                     let mut schemas_data: Vec<(String, Vec<String>)> = Vec::new();
 
                     for db in &databases {
-                        let schemas = provider.get_schemas().await.unwrap_or_default();
+                        let mut schemas = provider.get_schemas().await.unwrap_or_default();
+                        // No explicit schemas (e.g. MongoDB) → use db name as synthetic schema
+                        if schemas.is_empty() {
+                            schemas = vec![db.clone()];
+                        }
                         schemas_data.push((db.clone(), schemas.clone()));
 
                         for schema in &schemas {
@@ -1276,9 +1313,27 @@ impl App {
             KeyCode::Enter => {
                 let id = self.explorer_tree.selected_id();
                 if let Some(ref id) = id {
-                    if id.starts_with("column:") {
+                    if id.starts_with("table:") && !id.ends_with(':') {
+                        let table_name = id.strip_prefix("table:").unwrap();
+                        let (db_name, short) = match table_name.find('.') {
+                            Some(pos) => (&table_name[..pos], &table_name[pos + 1..]),
+                            None => ("", table_name),
+                        };
+                        let query = if self.active_db_type() == Some(DatabaseType::MongoDB) {
+                            if db_name.is_empty() {
+                                format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
+                            } else {
+                                format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
+                            }
+                        } else {
+                            format!("SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n", short)
+                        };
+                        self.pending_action = PendingAction::OpenQuery(query);
+                    } else if id.starts_with("column:") {
                         self.current_page = Page::Explorer;
                         self.set_status(format!("Viewing column details"));
+                    } else if !id.ends_with(':') {
+                        self.explorer_tree.toggle_selected();
                     }
                 }
                 true
@@ -1343,6 +1398,16 @@ impl App {
             KeyCode::Char('d') => {
                 if !self.connections.is_empty() {
                     self.conn_page_mode = ConnPageMode::Deleting(self.conn_list_selected);
+                }
+                true
+            }
+            KeyCode::Enter if key.modifiers == KeyModifiers::ALT => {
+                if let Some(conn) = self.connections.get(self.conn_list_selected) {
+                    if self.pool.contains(conn.id) {
+                        self.pending_action = PendingAction::Disconnect(conn.id);
+                    } else {
+                        self.set_status(format!("\"{}\" is not connected", conn.name));
+                    }
                 }
                 true
             }
@@ -1514,10 +1579,20 @@ impl App {
                             let id = self.explorer_tree.selected_id();
                             if let Some(ref id) = id {
                                 if id.starts_with("table:") && !id.ends_with(':') {
-                                    let table_name = id.strip_prefix("table:").unwrap().to_string();
-                                    // Strip schema prefix if present (e.g. "public.users" -> "users")
-                                    let short = table_name.rsplit('.').next().unwrap_or(&table_name);
-                                    let query = format!("SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n", short);
+                                    let table_name = id.strip_prefix("table:").unwrap();
+                                    let (db_name, short) = match table_name.find('.') {
+                                        Some(pos) => (&table_name[..pos], &table_name[pos + 1..]),
+                                        None => ("", table_name),
+                                    };
+                                    let query = if self.active_db_type() == Some(DatabaseType::MongoDB) {
+                                        if db_name.is_empty() {
+                                            format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
+                                        } else {
+                                            format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
+                                        }
+                                    } else {
+                                        format!("SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n", short)
+                                    };
                                     self.pending_action = PendingAction::OpenQuery(query);
                                 } else {
                                     self.explorer_tree.toggle_selected();

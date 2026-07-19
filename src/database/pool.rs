@@ -84,6 +84,10 @@ impl ConnectionPool {
         self.connections.len()
     }
 
+    pub fn contains(&self, id: Uuid) -> bool {
+        self.connections.contains_key(&id)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.connections.is_empty()
     }

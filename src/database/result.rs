@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use bson::Document;
+
 use crate::database::types::ColumnInfo;
 
 #[derive(Debug, Clone)]
@@ -109,6 +111,7 @@ pub struct QueryResult {
     pub duration: Duration,
     pub messages: Vec<String>,
     pub is_select: bool,
+    pub raw_documents: Option<Vec<Document>>,
 }
 
 impl QueryResult {
@@ -120,6 +123,7 @@ impl QueryResult {
             duration,
             messages: Vec::new(),
             is_select: true,
+            raw_documents: None,
         }
     }
 
@@ -131,6 +135,7 @@ impl QueryResult {
             duration,
             messages: Vec::new(),
             is_select: false,
+            raw_documents: None,
         }
     }
 

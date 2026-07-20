@@ -24,9 +24,7 @@ impl MongoProvider {
     }
 
     fn client(&self) -> DatabaseResult<&Client> {
-        self.client
-            .as_ref()
-            .ok_or(DatabaseError::NotConnected)
+        self.client.as_ref().ok_or(DatabaseError::NotConnected)
     }
 }
 
@@ -84,7 +82,9 @@ fn bson_to_value(bson: &Bson) -> Value {
         ),
         Bson::Array(arr) => Value::Json(
             serde_json::to_string(
-                &arr.iter().map(|v| bson_to_json_value(v)).collect::<Vec<_>>(),
+                &arr.iter()
+                    .map(|v| bson_to_json_value(v))
+                    .collect::<Vec<_>>(),
             )
             .unwrap_or_else(|_| "<unserializable>".to_string()),
         ),
@@ -108,9 +108,7 @@ fn bson_to_json_value(bson: &Bson) -> serde_json::Value {
             serde_json::json!({"$binary": {"base64": "", "subType": format!("{:02x}", bin.subtype)}})
         }
         Bson::Document(d) => doc_to_json_value(d),
-        Bson::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(bson_to_json_value).collect())
-        }
+        Bson::Array(arr) => serde_json::Value::Array(arr.iter().map(bson_to_json_value).collect()),
         _ => serde_json::Value::String(format!("{:?}", bson)),
     }
 }
@@ -134,7 +132,9 @@ fn collect_fields(doc: &Document, prefix: &str, fields: &mut BTreeMap<String, (S
         let is_pk = full_path == "_id" || full_path.ends_with("._id");
         let type_name = bson_type_name(value);
 
-        let entry = fields.entry(full_path.clone()).or_insert_with(|| (type_name.to_string(), is_pk));
+        let entry = fields
+            .entry(full_path.clone())
+            .or_insert_with(|| (type_name.to_string(), is_pk));
         if entry.0 != type_name {
             entry.0 = combine_types(&entry.0, type_name);
         }
@@ -166,7 +166,10 @@ fn combine_types(existing: &str, new: &str) -> String {
     if existing == new {
         return existing.to_string();
     }
-    if let Some(inner) = existing.strip_prefix("mixed(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(inner) = existing
+        .strip_prefix("mixed(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         if !inner.contains(new) {
             let mut parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
             parts.push(new);
@@ -368,13 +371,12 @@ impl DatabaseProvider for MongoProvider {
         let start = std::time::Instant::now();
         let client = self.client()?;
 
-        let json_val: serde_json::Value =
-            serde_json::from_str(sql)
-                .map_err(|e| DatabaseError::Execution(format!("Invalid JSON: {}", e)))?;
+        let json_val: serde_json::Value = serde_json::from_str(sql)
+            .map_err(|e| DatabaseError::Execution(format!("Invalid JSON: {}", e)))?;
 
-        let obj = json_val.as_object().ok_or_else(|| {
-            DatabaseError::Execution("Query must be a JSON object".to_string())
-        })?;
+        let obj = json_val
+            .as_object()
+            .ok_or_else(|| DatabaseError::Execution("Query must be a JSON object".to_string()))?;
 
         let db_name = obj
             .get("db")
@@ -383,18 +385,39 @@ impl DatabaseProvider for MongoProvider {
         let db = client.database(db_name);
 
         let recognized_cmds = [
-            "find", "aggregate", "insertOne", "insertMany",
-            "updateOne", "updateMany", "deleteOne", "deleteMany",
-            "count", "distinct", "collStats", "explain",
+            "find",
+            "aggregate",
+            "insertOne",
+            "insertMany",
+            "updateOne",
+            "updateMany",
+            "deleteOne",
+            "deleteMany",
+            "count",
+            "distinct",
+            "collStats",
+            "explain",
         ];
 
-        let cmd = match recognized_cmds.iter().find(|cmd| obj.get::<str>(*cmd).is_some()) {
+        let cmd = match recognized_cmds
+            .iter()
+            .find(|cmd| obj.get::<str>(*cmd).is_some())
+        {
             Some(c) => *c,
             None => {
                 if obj.len() == 1 {
                     let (key, val) = obj.iter().next().unwrap();
                     if val.as_i64() == Some(1) || val.as_f64() == Some(1.0) {
-                        return self.exec_find(&db, key, &Bson::Document(Document::new()), None, None, start).await;
+                        return self
+                            .exec_find(
+                                &db,
+                                key,
+                                &Bson::Document(Document::new()),
+                                None,
+                                None,
+                                start,
+                            )
+                            .await;
                     }
                 }
                 return Err(DatabaseError::Execution(
@@ -405,78 +428,125 @@ impl DatabaseProvider for MongoProvider {
 
         let collection_name = obj.get(cmd).and_then(|v| v.as_str()).ok_or_else(|| {
             DatabaseError::Execution(format!(
-                "Expected string value for \"{}\" key (collection name)", cmd
+                "Expected string value for \"{}\" key (collection name)",
+                cmd
             ))
         })?;
 
         match cmd {
             "find" => {
-                let filter = obj.get("filter").map(json_to_doc).transpose()?.unwrap_or_default();
+                let filter = obj
+                    .get("filter")
+                    .map(json_to_doc)
+                    .transpose()?
+                    .unwrap_or_default();
                 let limit = obj.get("limit").and_then(|v| v.as_i64());
                 let sort = obj.get("sort").map(json_to_doc).transpose()?;
-                self.exec_find(&db, collection_name, &Bson::Document(filter), sort, limit, start).await
+                self.exec_find(
+                    &db,
+                    collection_name,
+                    &Bson::Document(filter),
+                    sort,
+                    limit,
+                    start,
+                )
+                .await
             }
             "aggregate" => {
                 let pipeline_val = obj.get("pipeline").ok_or_else(|| {
                     DatabaseError::Execution("Missing \"pipeline\" for aggregate".to_string())
                 })?;
                 let pipeline = json_to_docs(pipeline_val)?;
-                self.exec_aggregate(&db, collection_name, pipeline, start).await
+                self.exec_aggregate(&db, collection_name, pipeline, start)
+                    .await
             }
             "insertOne" => {
                 let doc_val = obj.get("document").ok_or_else(|| {
                     DatabaseError::Execution("Missing \"document\" for insertOne".to_string())
                 })?;
                 let document = json_to_doc(doc_val)?;
-                self.exec_insert_one(&db, collection_name, document, start).await
+                self.exec_insert_one(&db, collection_name, document, start)
+                    .await
             }
             "insertMany" => {
                 let docs_val = obj.get("documents").ok_or_else(|| {
                     DatabaseError::Execution("Missing \"documents\" for insertMany".to_string())
                 })?;
                 let documents = json_to_docs(docs_val)?;
-                self.exec_insert_many(&db, collection_name, documents, start).await
+                self.exec_insert_many(&db, collection_name, documents, start)
+                    .await
             }
             "updateOne" => {
-                let filter = obj.get("filter").map(json_to_doc).transpose()?.unwrap_or_default();
+                let filter = obj
+                    .get("filter")
+                    .map(json_to_doc)
+                    .transpose()?
+                    .unwrap_or_default();
                 let update = obj.get("update").ok_or_else(|| {
                     DatabaseError::Execution("Missing \"update\" for updateOne".to_string())
                 })?;
                 let update_doc = json_to_doc(update)?;
-                self.exec_update_one(&db, collection_name, filter, update_doc, start).await
+                self.exec_update_one(&db, collection_name, filter, update_doc, start)
+                    .await
             }
             "updateMany" => {
-                let filter = obj.get("filter").map(json_to_doc).transpose()?.unwrap_or_default();
+                let filter = obj
+                    .get("filter")
+                    .map(json_to_doc)
+                    .transpose()?
+                    .unwrap_or_default();
                 let update = obj.get("update").ok_or_else(|| {
                     DatabaseError::Execution("Missing \"update\" for updateMany".to_string())
                 })?;
                 let update_doc = json_to_doc(update)?;
-                self.exec_update_many(&db, collection_name, filter, update_doc, start).await
+                self.exec_update_many(&db, collection_name, filter, update_doc, start)
+                    .await
             }
             "deleteOne" => {
-                let filter = obj.get("filter").map(json_to_doc).transpose()?.unwrap_or_default();
-                self.exec_delete_one(&db, collection_name, filter, start).await
+                let filter = obj
+                    .get("filter")
+                    .map(json_to_doc)
+                    .transpose()?
+                    .unwrap_or_default();
+                self.exec_delete_one(&db, collection_name, filter, start)
+                    .await
             }
             "deleteMany" => {
-                let filter = obj.get("filter").map(json_to_doc).transpose()?.unwrap_or_default();
-                self.exec_delete_many(&db, collection_name, filter, start).await
+                let filter = obj
+                    .get("filter")
+                    .map(json_to_doc)
+                    .transpose()?
+                    .unwrap_or_default();
+                self.exec_delete_many(&db, collection_name, filter, start)
+                    .await
             }
             "count" => {
-                let filter = obj.get("filter").map(json_to_doc).transpose()?.unwrap_or_default();
+                let filter = obj
+                    .get("filter")
+                    .map(json_to_doc)
+                    .transpose()?
+                    .unwrap_or_default();
                 self.exec_count(&db, collection_name, filter, start).await
             }
             "distinct" => {
                 let field = obj.get("field").and_then(|v| v.as_str()).ok_or_else(|| {
                     DatabaseError::Execution("Missing \"field\" for distinct".to_string())
                 })?;
-                let filter = obj.get("filter").map(json_to_doc).transpose()?.unwrap_or_default();
-                self.exec_distinct(&db, collection_name, field, filter, start).await
+                let filter = obj
+                    .get("filter")
+                    .map(json_to_doc)
+                    .transpose()?
+                    .unwrap_or_default();
+                self.exec_distinct(&db, collection_name, field, filter, start)
+                    .await
             }
-            "collStats" => {
-                self.exec_coll_stats(&db, collection_name, start).await
-            }
+            "collStats" => self.exec_coll_stats(&db, collection_name, start).await,
             "explain" => {
-                let filter = obj.get("filter").map(json_to_doc).transpose()?.unwrap_or_default();
+                let filter = obj
+                    .get("filter")
+                    .map(json_to_doc)
+                    .transpose()?
+                    .unwrap_or_default();
                 self.exec_explain(&db, collection_name, filter, start).await
             }
             _ => unreachable!(),
@@ -500,7 +570,11 @@ impl DatabaseProvider for MongoProvider {
 
     async fn get_tables(&self, schema: &str) -> DatabaseResult<Vec<TableInfo>> {
         let client = self.client()?;
-        let db_name = if schema.is_empty() { &self.database_name } else { schema };
+        let db_name = if schema.is_empty() {
+            &self.database_name
+        } else {
+            schema
+        };
         let db = client.database(db_name);
         let names = db
             .list_collection_names()
@@ -703,13 +777,19 @@ impl MongoProvider {
             .map_err(|e| DatabaseError::Execution(e.to_string()))?;
 
         if docs.is_empty() {
-            return Ok(QueryResult::new_select(Vec::new(), Vec::new(), start.elapsed()));
+            return Ok(QueryResult::new_select(
+                Vec::new(),
+                Vec::new(),
+                start.elapsed(),
+            ));
         }
 
         let columns = docs_to_columns(&docs);
         let rows: Vec<Vec<Value>> = docs.iter().map(|d| doc_to_row(d, &columns)).collect();
 
-        Ok(QueryResult::new_select(columns, rows, start.elapsed()))
+        let mut result = QueryResult::new_select(columns, rows, start.elapsed());
+        result.raw_documents = Some(docs);
+        Ok(result)
     }
 
     async fn exec_aggregate(
@@ -730,13 +810,19 @@ impl MongoProvider {
             .map_err(|e| DatabaseError::Execution(e.to_string()))?;
 
         if docs.is_empty() {
-            return Ok(QueryResult::new_select(Vec::new(), Vec::new(), start.elapsed()));
+            return Ok(QueryResult::new_select(
+                Vec::new(),
+                Vec::new(),
+                start.elapsed(),
+            ));
         }
 
         let columns = docs_to_columns(&docs);
         let rows: Vec<Vec<Value>> = docs.iter().map(|d| doc_to_row(d, &columns)).collect();
 
-        Ok(QueryResult::new_select(columns, rows, start.elapsed()))
+        let mut result = QueryResult::new_select(columns, rows, start.elapsed());
+        result.raw_documents = Some(docs);
+        Ok(result)
     }
 
     async fn exec_insert_one(
@@ -913,7 +999,9 @@ impl MongoProvider {
         let columns = docs_to_columns(&docs);
         let rows: Vec<Vec<Value>> = docs.iter().map(|d| doc_to_row(d, &columns)).collect();
 
-        Ok(QueryResult::new_select(columns, rows, start.elapsed()))
+        let mut result = QueryResult::new_select(columns, rows, start.elapsed());
+        result.raw_documents = Some(docs);
+        Ok(result)
     }
 
     async fn exec_explain(
@@ -938,6 +1026,8 @@ impl MongoProvider {
         let columns = docs_to_columns(&docs);
         let rows: Vec<Vec<Value>> = docs.iter().map(|d| doc_to_row(d, &columns)).collect();
 
-        Ok(QueryResult::new_select(columns, rows, start.elapsed()))
+        let mut result = QueryResult::new_select(columns, rows, start.elapsed());
+        result.raw_documents = Some(docs);
+        Ok(result)
     }
 }

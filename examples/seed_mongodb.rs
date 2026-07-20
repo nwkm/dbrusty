@@ -1,11 +1,10 @@
+use bson::{doc, Document};
 /// Seed MongoDB with random fake data for testing.
 ///
 /// Usage: cargo run --example seed_mongodb [uri] [database]
 ///   uri:      mongodb://127.0.0.1:27017 (default)
 ///   database: dbrusty_seed (default)
-
 use mongodb::Client;
-use bson::{doc, Document};
 use rand::Rng;
 use std::time::Instant;
 
@@ -14,15 +13,36 @@ fn pick<'a, T>(items: &'a [T]) -> &'a T {
 }
 
 fn random_name() -> String {
-    let first = ["Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Hank",
-                  "Iris", "Jack", "Kate", "Liam", "Mia", "Noah", "Olivia", "Paul"];
-    let last = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller",
-                 "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Wilson"];
+    let first = [
+        "Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Hank", "Iris", "Jack",
+        "Kate", "Liam", "Mia", "Noah", "Olivia", "Paul",
+    ];
+    let last = [
+        "Smith",
+        "Johnson",
+        "Williams",
+        "Brown",
+        "Jones",
+        "Garcia",
+        "Miller",
+        "Davis",
+        "Rodriguez",
+        "Martinez",
+        "Hernandez",
+        "Lopez",
+        "Wilson",
+    ];
     format!("{} {}", pick(&first), pick(&last))
 }
 
 fn random_email(name: &str) -> String {
-    let domains = ["gmail.com", "yahoo.com", "outlook.com", "example.com", "acme.org"];
+    let domains = [
+        "gmail.com",
+        "yahoo.com",
+        "outlook.com",
+        "example.com",
+        "acme.org",
+    ];
     let local = name.to_lowercase().replace(' ', ".");
     format!("{}@{}", local, pick(&domains))
 }
@@ -36,8 +56,14 @@ fn random_price() -> f64 {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let uri = args.get(1).cloned().unwrap_or_else(|| "mongodb://127.0.0.1:27017".into());
-    let db_name = args.get(2).cloned().unwrap_or_else(|| "dbrusty_seed".into());
+    let uri = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "mongodb://127.0.0.1:27017".into());
+    let db_name = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| "dbrusty_seed".into());
 
     println!("Connecting to {} ...", uri);
     let client = Client::with_uri_str(&uri).await.expect("connect failed");
@@ -52,8 +78,16 @@ async fn main() {
         for _ in 0..100 {
             let mut rng = rand::rng();
             let name = random_name();
-            let tag1 = if rng.random_bool(0.3) { "premium" } else { "standard" };
-            let tag2 = if rng.random_bool(0.1) { "vip" } else { "regular" };
+            let tag1 = if rng.random_bool(0.3) {
+                "premium"
+            } else {
+                "standard"
+            };
+            let tag2 = if rng.random_bool(0.1) {
+                "vip"
+            } else {
+                "regular"
+            };
             docs.push(doc! {
                 "name": &name,
                 "email": random_email(&name),
@@ -71,7 +105,15 @@ async fn main() {
     // ── products (50 docs) ──────────────────────────────────────────
     {
         let coll = db.collection::<Document>("products");
-        let cats = ["Electronics", "Clothing", "Books", "Home", "Sports", "Food", "Toys"];
+        let cats = [
+            "Electronics",
+            "Clothing",
+            "Books",
+            "Home",
+            "Sports",
+            "Food",
+            "Toys",
+        ];
         let mut docs = Vec::with_capacity(50);
         for i in 1..=50 {
             let mut rng = rand::rng();
@@ -88,7 +130,9 @@ async fn main() {
                 "created_at": bson::DateTime::now(),
             });
         }
-        coll.insert_many(docs).await.expect("insert products failed");
+        coll.insert_many(docs)
+            .await
+            .expect("insert products failed");
         println!("  ✓ products: 50 documents");
     }
 
@@ -149,14 +193,26 @@ async fn main() {
     // ── analytics_events (1000 docs) ────────────────────────────────
     {
         let coll = db.collection::<Document>("analytics_events");
-        let events = ["page_view", "click", "signup", "purchase", "login", "logout", "search"];
+        let events = [
+            "page_view",
+            "click",
+            "signup",
+            "purchase",
+            "login",
+            "logout",
+            "search",
+        ];
         let browsers = ["Chrome", "Firefox", "Safari", "Edge"];
         let oss = ["MacOS", "Windows", "Linux", "iOS", "Android"];
         let refs = ["https://google.com", "https://twitter.com", "direct"];
         let mut docs = Vec::with_capacity(1000);
         for _ in 0..1000 {
             let mut rng = rand::rng();
-            let res = format!("{}x{}", rng.random_range(1024..3840), rng.random_range(768..2160));
+            let res = format!(
+                "{}x{}",
+                rng.random_range(1024..3840),
+                rng.random_range(768..2160)
+            );
             let metadata = doc! {
                 "browser": pick(&browsers),
                 "os": pick(&oss),
@@ -172,16 +228,33 @@ async fn main() {
                 "timestamp": bson::DateTime::now(),
             });
         }
-        coll.insert_many(docs).await.expect("insert analytics failed");
+        coll.insert_many(docs)
+            .await
+            .expect("insert analytics failed");
         println!("  ✓ analytics_events: 1000 documents");
     }
 
     // ── companies (nested departments > employees) ─────────────────
     {
         let coll = db.collection::<Document>("companies");
-        let dept_names = ["Engineering", "Sales", "Marketing", "HR", "Finance", "Support"];
+        let dept_names = [
+            "Engineering",
+            "Sales",
+            "Marketing",
+            "HR",
+            "Finance",
+            "Support",
+        ];
         let titles = ["Junior", "Senior", "Lead", "Manager", "Director"];
-        let skills_pool = ["Rust", "Python", "JavaScript", "Go", "SQL", "MongoDB", "Kubernetes"];
+        let skills_pool = [
+            "Rust",
+            "Python",
+            "JavaScript",
+            "Go",
+            "SQL",
+            "MongoDB",
+            "Kubernetes",
+        ];
         let mut docs = Vec::with_capacity(10);
         for c in 1..=10 {
             let mut rng = rand::rng();
@@ -216,7 +289,9 @@ async fn main() {
                 "departments": &departments,
             });
         }
-        coll.insert_many(docs).await.expect("insert companies failed");
+        coll.insert_many(docs)
+            .await
+            .expect("insert companies failed");
         println!("  ✓ companies: 10 documents (nested)");
     }
 

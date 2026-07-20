@@ -1,6 +1,5 @@
 /// Check what the explorer tree would show for a MongoDB connection.
 /// Usage: cargo run --example check_explorer [database_name]
-
 use dbrusty::database::provider::DatabaseProvider;
 use dbrusty::models::connection::{ConnectionConfig, DatabaseType};
 use dbrusty::providers::mongodb::MongoProvider;
@@ -48,7 +47,12 @@ async fn main() {
             let schema_key = format!("{}.{}", db, schema);
             match provider.get_tables(schema).await {
                 Ok(tables) => {
-                    println!("  db='{}', schema='{}' -> {} collections", db, schema, tables.len());
+                    println!(
+                        "  db='{}', schema='{}' -> {} collections",
+                        db,
+                        schema,
+                        tables.len()
+                    );
                     if !tables.is_empty() {
                         let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
                         println!("    collections: {:?}", names);
@@ -69,7 +73,11 @@ async fn main() {
         println!("  {} ({})", db, flat_str);
         for schema in schemas {
             let key = format!("{}.{}", db, schema);
-            let count = tables_data.iter().find(|(k, _)| k == &key).map(|(_, t)| t.len()).unwrap_or(0);
+            let count = tables_data
+                .iter()
+                .find(|(k, _)| k == &key)
+                .map(|(_, t)| t.len())
+                .unwrap_or(0);
             println!("    └─ {} ({} collections)", schema, count);
         }
     }

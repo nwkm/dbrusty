@@ -30,6 +30,7 @@ use crate::providers::sqlite::SqliteProvider;
 use crate::storage;
 use crate::ui;
 use crate::widgets::input::InputField;
+use crate::widgets::mongo_doc_list::MongoDocListState;
 use crate::widgets::tree::TreeState;
 
 #[allow(dead_code)]
@@ -120,11 +121,23 @@ impl ConnectionFormState {
         Self {
             is_new: true,
             editing_id: None,
-            name: if has_env { std::env::var("DATABASE_NAME").unwrap_or_default() } else { String::new() },
-            db_type: if has_env { DatabaseType::Postgres } else { DatabaseType::SQLite },
+            name: if has_env {
+                std::env::var("DATABASE_NAME").unwrap_or_default()
+            } else {
+                String::new()
+            },
+            db_type: if has_env {
+                DatabaseType::Postgres
+            } else {
+                DatabaseType::SQLite
+            },
             host: env_host.unwrap_or_else(|| "localhost".to_string()),
             port: std::env::var("DATABASE_PORT").unwrap_or_default(),
-            database: if has_env { std::env::var("DATABASE_NAME").unwrap_or_default() } else { String::new() },
+            database: if has_env {
+                std::env::var("DATABASE_NAME").unwrap_or_default()
+            } else {
+                String::new()
+            },
             username: std::env::var("DATABASE_USERNAME").unwrap_or_default(),
             password: std::env::var("DATABASE_PASSWORD").unwrap_or_default(),
             active_field: 0,
@@ -273,6 +286,43 @@ pub struct App {
     pub global_search: Option<crate::ui::search::GlobalSearchState>,
     pub json_tree_state: TreeState,
     pub json_tree_cell: (usize, usize),
+    pub mongo_raw_documents: Option<Vec<bson::Document>>,
+    pub mongo_doc_state: MongoDocListState,
+    pub mongo_edit_path: Option<String>,
+}
+
+fn mongo_value_strip_quotes(s: &str) -> &str {
+    s.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s)
+}
+
+fn mongo_update_by_path(doc: &mut bson::Document, parts: &[&str], value: bson::Bson) {
+    if parts.is_empty() {
+        return;
+    }
+    let key = parts[0];
+    if parts.len() == 1 {
+        doc.insert(key, value);
+    } else {
+        let rest = &parts[1..];
+        if rest[0].starts_with('[') && rest[0].ends_with(']') {
+            let idx: usize = rest[0][1..rest[0].len() - 1].parse().unwrap_or(0);
+            if let Some(bson::Bson::Array(arr)) = doc.get_mut(key) {
+                if idx < arr.len() {
+                    if rest.len() == 1 {
+                        arr[idx] = value;
+                    } else if let Some(nested) = arr[idx].as_document_mut() {
+                        mongo_update_by_path(nested, &rest[1..], value);
+                    }
+                }
+            }
+        } else {
+            if let Some(bson::Bson::Document(nested)) = doc.get_mut(key) {
+                mongo_update_by_path(nested, rest, value);
+            }
+        }
+    }
 }
 
 impl App {
@@ -283,6 +333,10 @@ impl App {
                 .find(|c| c.id == id)
                 .map(|c| c.db_type.clone())
         })
+    }
+
+    pub fn is_mongo_query(&self) -> bool {
+        self.mongo_raw_documents.is_some()
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -306,7 +360,9 @@ impl App {
 
     fn clamp_result_scroll(&mut self) {
         if !self.query_data.is_empty() {
-            self.result_scroll_v = self.result_scroll_v.min(self.query_data.len().saturating_sub(1));
+            self.result_scroll_v = self
+                .result_scroll_v
+                .min(self.query_data.len().saturating_sub(1));
             let max_h = self.max_result_scroll_h();
             self.result_scroll_h = self.result_scroll_h.min(max_h);
         } else {
@@ -384,23 +440,20 @@ impl App {
             global_search: None,
             json_tree_state: TreeState::new(Vec::new()),
             json_tree_cell: (usize::MAX, usize::MAX),
+            mongo_raw_documents: None,
+            mongo_doc_state: MongoDocListState::new(),
+            mongo_edit_path: None,
         };
         app.set_status("Ready");
         app
     }
 
     pub async fn run(&mut self) -> color_eyre::Result<()> {
-        crossterm::execute!(
-            std::io::stdout(),
-            crossterm::event::EnableMouseCapture
-        )?;
+        crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
         let mut terminal = ratatui::init();
         let result = self.run_loop(&mut terminal).await;
         ratatui::restore();
-        crossterm::execute!(
-            std::io::stdout(),
-            crossterm::event::DisableMouseCapture
-        )?;
+        crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
         result
     }
 
@@ -418,10 +471,10 @@ impl App {
                     Event::Key(key) => self.handle_key(key),
                     Event::Mouse(mouse) => self.handle_mouse(mouse),
                     Event::Resize(w, h) => self.handle_resize(w, h),
-            _ => {}
-        }
-        self.clamp_result_scroll();
-    }
+                    _ => {}
+                }
+                self.clamp_result_scroll();
+            }
         }
         Ok(())
     }
@@ -509,11 +562,13 @@ impl App {
                             let schema_key = format!("{}.{}", db, schema);
 
                             if let Ok(tables) = provider.get_tables(schema).await {
-                                self.metadata_cache.set_tables(schema_key.clone(), tables.clone());
+                                self.metadata_cache
+                                    .set_tables(schema_key.clone(), tables.clone());
                                 tables_data.push((schema_key.clone(), tables));
                             }
                             if let Ok(views) = provider.get_views(schema).await {
-                                self.metadata_cache.set_views(schema_key.clone(), views.clone());
+                                self.metadata_cache
+                                    .set_views(schema_key.clone(), views.clone());
                                 views_data.push((schema_key.clone(), views));
                             }
                         }
@@ -583,46 +638,75 @@ impl App {
                         })
                         .collect();
 
-                    if result.is_select {
-                        self.query_results.clear();
-                        self.query_columns = result.columns.iter().map(|c| c.name.clone()).collect();
-                        self.query_data = result
-                            .rows
-                            .iter()
-                            .map(|row| row.iter().map(|v| v.to_string()).collect())
-                            .collect();
-                        self.query_data_typed = result.rows.clone();
-                        self.query_column_info = result.columns.clone();
-                        self.query_col_widths = col_widths;
-                    } else {
-                        let mut output = String::new();
-                        output.push_str(&format!("({:?})", result.duration));
-                        output.push('\n');
-                        for (i, col) in result.columns.iter().enumerate() {
-                            if i > 0 { output.push_str(" | "); }
-                            output.push_str(&format!("{:width$}", col.name, width = col_widths[i]));
-                        }
-                        output.push('\n');
-                        for (i, w) in col_widths.iter().enumerate() {
-                            if i > 0 { output.push_str("-+-"); }
-                            for _ in 0..*w { output.push('-'); }
-                        }
-                        output.push('\n');
-                        for row in &result.rows {
-                            for (i, val) in row.iter().enumerate() {
-                                if i > 0 { output.push_str(" | "); }
-                                output.push_str(&format!("{:width$}", val.to_string(), width = col_widths[i]));
-                            }
-                            output.push('\n');
-                        }
-                        output.push_str(&format!("{} rows affected", result.rows_affected));
-                        output.push('\n');
-                        self.query_results = output;
+                    if result.raw_documents.is_some() {
+                        self.mongo_raw_documents = result.raw_documents.clone();
+                        self.mongo_doc_state = MongoDocListState::new();
                         self.query_columns.clear();
                         self.query_data.clear();
                         self.query_data_typed.clear();
                         self.query_column_info.clear();
                         self.query_col_widths.clear();
+                        self.query_results.clear();
+                    } else {
+                        self.mongo_raw_documents = None;
+                        if result.is_select {
+                            self.query_results.clear();
+                            self.query_columns =
+                                result.columns.iter().map(|c| c.name.clone()).collect();
+                            self.query_data = result
+                                .rows
+                                .iter()
+                                .map(|row| row.iter().map(|v| v.to_string()).collect())
+                                .collect();
+                            self.query_data_typed = result.rows.clone();
+                            self.query_column_info = result.columns.clone();
+                            self.query_col_widths = col_widths;
+                        } else {
+                            let mut output = String::new();
+                            output.push_str(&format!("({:?})", result.duration));
+                            output.push('\n');
+                            for (i, col) in result.columns.iter().enumerate() {
+                                if i > 0 {
+                                    output.push_str(" | ");
+                                }
+                                output.push_str(&format!(
+                                    "{:width$}",
+                                    col.name,
+                                    width = col_widths[i]
+                                ));
+                            }
+                            output.push('\n');
+                            for (i, w) in col_widths.iter().enumerate() {
+                                if i > 0 {
+                                    output.push_str("-+-");
+                                }
+                                for _ in 0..*w {
+                                    output.push('-');
+                                }
+                            }
+                            output.push('\n');
+                            for row in &result.rows {
+                                for (i, val) in row.iter().enumerate() {
+                                    if i > 0 {
+                                        output.push_str(" | ");
+                                    }
+                                    output.push_str(&format!(
+                                        "{:width$}",
+                                        val.to_string(),
+                                        width = col_widths[i]
+                                    ));
+                                }
+                                output.push('\n');
+                            }
+                            output.push_str(&format!("{} rows affected", result.rows_affected));
+                            output.push('\n');
+                            self.query_results = output;
+                            self.query_columns.clear();
+                            self.query_data.clear();
+                            self.query_data_typed.clear();
+                            self.query_column_info.clear();
+                            self.query_col_widths.clear();
+                        }
                     }
                     self.result_scroll_v = 0;
                     self.result_scroll_h = 0;
@@ -643,6 +727,7 @@ impl App {
                     self.query_data_typed.clear();
                     self.query_column_info.clear();
                     self.query_col_widths.clear();
+                    self.mongo_raw_documents = None;
                     self.cell_edit_mode = CellEditMode::Inactive;
                     self.set_status(format!("Query failed: {}", e));
                 }
@@ -734,6 +819,10 @@ impl App {
             return true;
         }
 
+        if self.is_mongo_query() {
+            return self.handle_mongo_doc_key(key);
+        }
+
         if self.query_data.is_empty() {
             return false;
         }
@@ -786,7 +875,10 @@ impl App {
             }
             KeyCode::PageDown => {
                 self.inspector_edit_col = None;
-                self.selected_row = self.selected_row.saturating_add(data_height).min(self.query_data.len().saturating_sub(1));
+                self.selected_row = self
+                    .selected_row
+                    .saturating_add(data_height)
+                    .min(self.query_data.len().saturating_sub(1));
                 self.ensure_cell_visible(data_height);
                 self.rebuild_json_tree();
                 true
@@ -809,9 +901,7 @@ impl App {
                 self.start_cell_edit();
                 true
             }
-            KeyCode::Char('y') | KeyCode::Char('Y')
-                if key.modifiers == KeyModifiers::NONE =>
-            {
+            KeyCode::Char('y') | KeyCode::Char('Y') if key.modifiers == KeyModifiers::NONE => {
                 self.copy_selected_cell();
                 true
             }
@@ -831,9 +921,190 @@ impl App {
         }
     }
 
+    fn handle_mongo_doc_key(&mut self, key: &KeyEvent) -> bool {
+        // If cell edit popup is active, delegate to the shared handler
+        if self.cell_edit_mode == CellEditMode::Editing {
+            let result = self.handle_cell_edit_popup_key(key);
+            if self.cell_edit_mode == CellEditMode::Inactive {
+                self.mongo_edit_path = None;
+            }
+            return result;
+        }
+
+        let docs = match self.mongo_raw_documents {
+            Some(ref docs) => docs,
+            None => return false,
+        };
+        let total_lines = self.mongo_doc_state.cached_line_count(docs);
+
+        let visible_height = self.main_rect.height.saturating_sub(4) as usize;
+
+        let step = 3usize;
+
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                for _ in 0..step {
+                    self.mongo_doc_state
+                        .select_down(total_lines, visible_height);
+                }
+                true
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                for _ in 0..step {
+                    self.mongo_doc_state.select_up();
+                }
+                true
+            }
+            KeyCode::Enter => {
+                let lines = crate::widgets::mongo_doc_list::build_flat_list_ref(
+                    docs,
+                    &self.mongo_doc_state.expanded_fields,
+                );
+                if let Some(line) = lines.get(self.mongo_doc_state.selected_line) {
+                    if !line.is_header && !line.is_separator && !line.is_expandable {
+                        self.mongo_edit_path = Some(line.path_key.clone());
+                        let display = mongo_value_strip_quotes(&line.value_display).to_string();
+                        self.cell_edit_input = InputField::with_value("", display.into());
+                        self.cell_edit_mode = CellEditMode::Editing;
+                        self.cell_edit_focus = CellEditFocus::Editor;
+                        self.set_status("Editing value");
+                    }
+                }
+                true
+            }
+            KeyCode::Char('l') => {
+                self.mongo_doc_state.toggle_selected(docs);
+                true
+            }
+            KeyCode::Char('h') => {
+                let lines = crate::widgets::mongo_doc_list::build_flat_list_ref(
+                    docs,
+                    &self.mongo_doc_state.expanded_fields,
+                );
+                if let Some(line) = lines.get(self.mongo_doc_state.selected_line) {
+                    if !line.is_header && line.is_expandable {
+                        if self
+                            .mongo_doc_state
+                            .expanded_fields
+                            .contains(&line.path_key)
+                        {
+                            self.mongo_doc_state.expanded_fields.remove(&line.path_key);
+                            true
+                        } else {
+                            if let Some(last_dot) = line.path_key.rfind('.') {
+                                let parent_key = line.path_key[..last_dot].to_string();
+                                if self.mongo_doc_state.expanded_fields.contains(&parent_key) {
+                                    self.mongo_doc_state.expanded_fields.remove(&parent_key);
+                                }
+                            }
+                            true
+                        }
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            }
+            KeyCode::Char('g') => {
+                self.mongo_doc_state.go_to_first();
+                true
+            }
+            KeyCode::Char('G') => {
+                self.mongo_doc_state.go_to_last(total_lines);
+                true
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.mongo_doc_state.page_up(visible_height);
+                true
+            }
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+                self.mongo_doc_state.page_down(visible_height, total_lines);
+                true
+            }
+            KeyCode::Char('o') => {
+                self.mongo_doc_state.expand_all(docs);
+                true
+            }
+            KeyCode::Char('O') => {
+                self.mongo_doc_state.collapse_all(docs);
+                true
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let Some(val) = self.mongo_doc_state.selected_value(docs) {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        let _ = cb.set_text(val.clone());
+                    }
+                    self.set_status(format!("Copied: {}", val));
+                }
+                true
+            }
+            KeyCode::Esc => {
+                self.mongo_doc_state.selected_line = 0;
+                self.mongo_doc_state.scroll_offset = 0;
+                self.query_editor_focus = QueryEditorFocus::Editor;
+                self.set_status("Focus: Editor");
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn mongo_confirm_edit(&mut self) {
+        let path = match self.mongo_edit_path.take() {
+            Some(p) => p,
+            None => return,
+        };
+        let new_val = self.cell_edit_input.value.clone();
+
+        // Parse path: first component is doc index, rest is field path
+        let dot = match path.find('.') {
+            Some(p) => p,
+            None => return,
+        };
+        let doc_idx: usize = match path[..dot].parse() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
+        let field_path = &path[dot + 1..];
+
+        let docs = match self.mongo_raw_documents.as_mut() {
+            Some(d) => d,
+            None => return,
+        };
+        if doc_idx >= docs.len() {
+            return;
+        }
+
+        let parts: Vec<&str> = field_path.split('.').collect();
+        mongo_update_by_path(
+            &mut docs[doc_idx],
+            &parts,
+            bson::Bson::String(new_val.clone()),
+        );
+        self.set_status(format!("Value updated"));
+    }
+
+    fn mongo_mouse_to_line(&self, mouse_row: u16) -> Option<usize> {
+        let combined_h = self.main_rect.height;
+        let results_area_y = self.main_rect.y + combined_h * 25 / 100;
+        let inner_y = results_area_y + 1; // border
+        if mouse_row < inner_y {
+            return None;
+        }
+        let relative_row = (mouse_row - inner_y) as usize;
+        let line = self.mongo_doc_state.scroll_offset + relative_row;
+        let docs = self.mongo_raw_documents.as_ref()?;
+        let total = self.mongo_doc_state.cached_line_count(docs);
+        if line < total {
+            Some(line)
+        } else {
+            None
+        }
+    }
+
     fn copy_selected_cell(&mut self) {
-        if self.selected_row < self.query_data.len()
-            && self.selected_col < self.query_columns.len()
+        if self.selected_row < self.query_data.len() && self.selected_col < self.query_columns.len()
         {
             let val = &self.query_data[self.selected_row][self.selected_col];
             if let Ok(mut cb) = arboard::Clipboard::new() {
@@ -852,8 +1123,7 @@ impl App {
                         && edit_col < self.query_columns.len()
                     {
                         if self.inspector_saved_value.is_none() {
-                            let original =
-                                self.query_data[self.selected_row][edit_col].clone();
+                            let original = self.query_data[self.selected_row][edit_col].clone();
                             self.inspector_saved_value =
                                 Some((self.selected_row, edit_col, original));
                         }
@@ -891,7 +1161,8 @@ impl App {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    self.inspector_edit_value.insert(self.inspector_edit_cursor, c);
+                    self.inspector_edit_value
+                        .insert(self.inspector_edit_cursor, c);
                     self.inspector_edit_cursor += 1;
                     self.ensure_inspector_cursor_visible(visible_w);
                     return true;
@@ -914,7 +1185,8 @@ impl App {
                     if self.inspector_edit_cursor > 0 {
                         self.inspector_edit_cursor -= 1;
                     } else if self.inspector_edit_scroll_h > 0 {
-                        self.inspector_edit_scroll_h = self.inspector_edit_scroll_h.saturating_sub(1);
+                        self.inspector_edit_scroll_h =
+                            self.inspector_edit_scroll_h.saturating_sub(1);
                     }
                     self.ensure_inspector_cursor_visible(visible_w);
                     return true;
@@ -1009,9 +1281,7 @@ impl App {
             if let Some((row, col, original)) = self.inspector_saved_value.take() {
                 if row < self.query_data.len() && col < self.query_columns.len() {
                     self.query_data[row][col] = original.clone();
-                    if row < self.query_data_typed.len()
-                        && col < self.query_data_typed[row].len()
-                    {
+                    if row < self.query_data_typed.len() && col < self.query_data_typed[row].len() {
                         let current = &self.query_data_typed[row][col];
                         match current {
                             Value::Json(_) => {
@@ -1107,8 +1377,7 @@ impl App {
     }
 
     fn start_cell_edit(&mut self) {
-        if self.selected_row < self.query_data.len()
-            && self.selected_col < self.query_columns.len()
+        if self.selected_row < self.query_data.len() && self.selected_col < self.query_columns.len()
         {
             let val = &self.query_data[self.selected_row][self.selected_col];
             self.cell_edit_input = InputField::with_value("", val.clone());
@@ -1118,9 +1387,12 @@ impl App {
     }
 
     fn confirm_cell_edit(&mut self) {
+        if self.mongo_edit_path.is_some() {
+            self.mongo_confirm_edit();
+            return;
+        }
         let new_val = self.cell_edit_input.value.clone();
-        if self.selected_row < self.query_data.len()
-            && self.selected_col < self.query_columns.len()
+        if self.selected_row < self.query_data.len() && self.selected_col < self.query_columns.len()
         {
             let old_val = self.query_data[self.selected_row][self.selected_col].clone();
             self.query_data[self.selected_row][self.selected_col] = new_val.clone();
@@ -1153,7 +1425,9 @@ impl App {
             return;
         }
         self.json_tree_cell = cell;
-        if let Some(typed) = self.query_data_typed.get(self.selected_row)
+        if let Some(typed) = self
+            .query_data_typed
+            .get(self.selected_row)
             .and_then(|r| r.get(self.selected_col))
         {
             if let Some(json) = typed.json_str() {
@@ -1425,7 +1699,10 @@ impl App {
                             if db_name.is_empty() {
                                 format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
                             } else {
-                                format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
+                                format!(
+                                    "{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n",
+                                    db_name, short
+                                )
                             }
                         } else {
                             format!("SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n", short)
@@ -1630,7 +1907,20 @@ impl App {
                 } else if self.current_page == Page::QueryEditor
                     && self.main_rect.contains((col, row).into())
                 {
-                    self.result_scroll_v = self.result_scroll_v.saturating_add(1);
+                    if self.is_mongo_query() {
+                        if let Some(docs) = self.mongo_raw_documents.as_ref() {
+                            let total = self.mongo_doc_state.cached_line_count(docs);
+                            for _ in 0..3 {
+                                if self.mongo_doc_state.selected_line + 1 < total {
+                                    self.mongo_doc_state.selected_line += 1;
+                                }
+                            }
+                        }
+                        self.mongo_doc_state.scroll_offset =
+                            self.mongo_doc_state.scroll_offset.saturating_add(3);
+                    } else {
+                        self.result_scroll_v = self.result_scroll_v.saturating_add(1);
+                    }
                 } else if self.main_rect.contains((col, row).into())
                     && self.current_page == Page::Connections
                     && self.conn_list_selected + 1 < self.connections.len()
@@ -1645,7 +1935,17 @@ impl App {
                 } else if self.current_page == Page::QueryEditor
                     && self.main_rect.contains((col, row).into())
                 {
-                    self.result_scroll_v = self.result_scroll_v.saturating_sub(1);
+                    if self.is_mongo_query() {
+                        for _ in 0..3 {
+                            if self.mongo_doc_state.selected_line > 0 {
+                                self.mongo_doc_state.selected_line -= 1;
+                            }
+                        }
+                        self.mongo_doc_state.scroll_offset =
+                            self.mongo_doc_state.scroll_offset.saturating_sub(3);
+                    } else {
+                        self.result_scroll_v = self.result_scroll_v.saturating_sub(1);
+                    }
                 } else if self.main_rect.contains((col, row).into())
                     && self.current_page == Page::Connections
                     && self.conn_list_selected > 0
@@ -1674,9 +1974,8 @@ impl App {
                     self.focus = Focus::Sidebar;
                     if let Some(idx) = self.explorer_tree.hit_test(row, self.sidebar_rect) {
                         self.explorer_tree.selected = idx;
-                        self.explorer_tree.adjust_offset(
-                            self.sidebar_rect.height.saturating_sub(3) as usize,
-                        );
+                        self.explorer_tree
+                            .adjust_offset(self.sidebar_rect.height.saturating_sub(3) as usize);
                         if is_double {
                             let id = self.explorer_tree.selected_id();
                             if let Some(ref id) = id {
@@ -1686,14 +1985,22 @@ impl App {
                                         Some(pos) => (&table_name[..pos], &table_name[pos + 1..]),
                                         None => ("", table_name),
                                     };
-                                    let query = if self.active_db_type() == Some(DatabaseType::MongoDB) {
+                                    let query = if self.active_db_type()
+                                        == Some(DatabaseType::MongoDB)
+                                    {
                                         if db_name.is_empty() {
-                                            format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
+                                            format!(
+                                                "{{ \"find\": \"{}\", \"limit\": 1000 }}\n",
+                                                short
+                                            )
                                         } else {
                                             format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
                                         }
                                     } else {
-                                        format!("SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n", short)
+                                        format!(
+                                            "SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n",
+                                            short
+                                        )
                                     };
                                     self.pending_action = PendingAction::OpenQuery(query);
                                 } else {
@@ -1718,12 +2025,10 @@ impl App {
                         if row >= inner_y && row < inner_y + inner_h {
                             let field_offset = (row - inner_y) / 3;
                             let row_in_field = (row - inner_y) % 3;
-                            let actual_col =
-                                self.inspector_scroll + field_offset as usize;
-                            if row_in_field == 1
-                                && actual_col < self.query_columns.len()
-                            {
-                                let val = self.query_data
+                            let actual_col = self.inspector_scroll + field_offset as usize;
+                            if row_in_field == 1 && actual_col < self.query_columns.len() {
+                                let val = self
+                                    .query_data
                                     .get(self.selected_row)
                                     .and_then(|r| r.get(actual_col))
                                     .cloned()
@@ -1733,8 +2038,8 @@ impl App {
                                 self.inspector_edit_scroll_h = 0;
                                 let click_col_offset = col.saturating_sub(inner_x);
                                 let cursor = click_col_offset as usize;
-                                self.inspector_edit_cursor = cursor
-                                    .min(self.inspector_edit_value.len());
+                                self.inspector_edit_cursor =
+                                    cursor.min(self.inspector_edit_value.len());
                             }
                         }
                     } else if row < editor_bottom {
@@ -1750,14 +2055,39 @@ impl App {
                         self.focus = Focus::Main;
                         self.update_key_hints();
                         self.query_editor_focus = QueryEditorFocus::Results;
-                        if let Some((cell_row, cell_col)) = self.mouse_to_cell(col, row) {
+                        if self.is_mongo_query() {
+                            if let Some(line) = self.mongo_mouse_to_line(row) {
+                                self.mongo_doc_state.selected_line = line;
+                                if is_double {
+                                    // Trigger edit via Enter key event
+                                    let docs = match self.mongo_raw_documents {
+                                        Some(ref docs) => docs,
+                                        None => return,
+                                    };
+                                    let lines = crate::widgets::mongo_doc_list::build_flat_list_ref(
+                                        docs,
+                                        &self.mongo_doc_state.expanded_fields,
+                                    );
+                                    if let Some(l) = lines.get(line) {
+                                        if !l.is_header && !l.is_separator && !l.is_expandable {
+                                            self.mongo_edit_path = Some(l.path_key.clone());
+                                            let display =
+                                                mongo_value_strip_quotes(&l.value_display)
+                                                    .to_string();
+                                            self.cell_edit_input =
+                                                InputField::with_value("", display.into());
+                                            self.cell_edit_mode = CellEditMode::Editing;
+                                            self.cell_edit_focus = CellEditFocus::Editor;
+                                            self.set_status("Editing value");
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let Some((cell_row, cell_col)) = self.mouse_to_cell(col, row) {
                             self.selected_row = cell_row;
                             self.selected_col = cell_col;
-                            let data_height = self
-                                .main_rect
-                                .height
-                                .saturating_sub(2)
-                                .saturating_sub(2) as usize;
+                            let data_height =
+                                self.main_rect.height.saturating_sub(2).saturating_sub(2) as usize;
                             self.ensure_cell_visible(data_height);
                             if is_double {
                                 self.start_cell_edit();
@@ -1803,7 +2133,9 @@ impl App {
         let now = Instant::now();
         let is_double = self
             .last_click
-            .map(|(c, r, t)| c == col && r == row && now.duration_since(t) < Duration::from_millis(400))
+            .map(|(c, r, t)| {
+                c == col && r == row && now.duration_since(t) < Duration::from_millis(400)
+            })
             .unwrap_or(false);
         self.last_click = Some((col, row, now));
         is_double
@@ -1881,7 +2213,10 @@ impl App {
         if is_new {
             self.conn_list_selected = self.connections.len() - 1;
             self.adjust_conn_scroll();
-            self.set_status(format!("Added \"{}\" — press Enter to connect", config.name));
+            self.set_status(format!(
+                "Added \"{}\" — press Enter to connect",
+                config.name
+            ));
         } else {
             self.set_status(format!("Updated connection \"{}\"", config.name));
         }

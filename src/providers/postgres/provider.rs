@@ -506,7 +506,8 @@ impl DatabaseProvider for PostgresProvider {
                                     if let Some(eq_pos) = trimmed.find("=> ") {
                                         let after_eq = &trimmed[eq_pos + 3..];
                                         let parts: Vec<&str> = after_eq.rsplitn(2, ' ').collect();
-                                        let type_name = parts.first().unwrap_or(&trimmed).trim().to_string();
+                                        let type_name =
+                                            parts.first().unwrap_or(&trimmed).trim().to_string();
                                         ParamInfo {
                                             name: String::new(),
                                             type_name,

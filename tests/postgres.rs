@@ -8,7 +8,6 @@
 ///   DATABASE_PASSWORD (required)
 ///
 /// Test is skipped if DATABASE_USERNAME is not set.
-
 use dbrusty::database::provider::DatabaseProvider;
 use dbrusty::models::connection::{ConnectionConfig, DatabaseType};
 use dbrusty::providers::postgres::PostgresProvider;
@@ -79,9 +78,16 @@ async fn test_postgres_get_databases() {
     let mut provider = PostgresProvider::new();
     provider.connect(&config).await.expect("connect failed");
 
-    let databases = provider.get_databases().await.expect("get_databases failed");
+    let databases = provider
+        .get_databases()
+        .await
+        .expect("get_databases failed");
     assert!(!databases.is_empty(), "should have at least one database");
-    assert!(databases.contains(&config.database), "expected '{}' in databases list", config.database);
+    assert!(
+        databases.contains(&config.database),
+        "expected '{}' in databases list",
+        config.database
+    );
 }
 
 #[tokio::test]
@@ -99,7 +105,10 @@ async fn test_postgres_get_schemas() {
 
     let schemas = provider.get_schemas().await.expect("get_schemas failed");
     assert!(!schemas.is_empty(), "should have at least 'public' schema");
-    assert!(schemas.contains(&"public".to_string()), "expected 'public' schema");
+    assert!(
+        schemas.contains(&"public".to_string()),
+        "expected 'public' schema"
+    );
 }
 
 #[tokio::test]
@@ -115,7 +124,10 @@ async fn test_postgres_get_tables() {
     let mut provider = PostgresProvider::new();
     provider.connect(&config).await.expect("connect failed");
 
-    let tables = provider.get_tables("public").await.expect("get_tables failed");
+    let tables = provider
+        .get_tables("public")
+        .await
+        .expect("get_tables failed");
     // We don't assert on count — the database may be empty
     for t in &tables {
         assert!(!t.name.is_empty(), "table name should not be empty");
@@ -136,7 +148,9 @@ async fn test_postgres_execute_query() {
     let mut provider = PostgresProvider::new();
     provider.connect(&config).await.expect("connect failed");
 
-    let result = provider.execute_query("SELECT 1 AS num, 'hello' AS text, true AS flag").await;
+    let result = provider
+        .execute_query("SELECT 1 AS num, 'hello' AS text, true AS flag")
+        .await;
     assert!(result.is_ok(), "query failed: {:?}", result.err());
 
     let result = result.unwrap();
@@ -177,13 +191,21 @@ async fn test_postgres_transactions() {
     provider.connect(&config).await.expect("connect failed");
 
     let result = provider.begin_transaction().await;
-    assert!(result.is_ok(), "begin_transaction failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "begin_transaction failed: {:?}",
+        result.err()
+    );
 
     let result = provider.rollback().await;
     assert!(result.is_ok(), "rollback failed: {:?}", result.err());
 
     let result = provider.begin_transaction().await;
-    assert!(result.is_ok(), "begin_transaction failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "begin_transaction failed: {:?}",
+        result.err()
+    );
 
     let result = provider.commit().await;
     assert!(result.is_ok(), "commit failed: {:?}", result.err());
@@ -202,14 +224,20 @@ async fn test_postgres_get_columns() {
     let mut provider = PostgresProvider::new();
     provider.connect(&config).await.expect("connect failed");
 
-    let tables = provider.get_tables("public").await.expect("get_tables failed");
+    let tables = provider
+        .get_tables("public")
+        .await
+        .expect("get_tables failed");
     if tables.is_empty() {
         eprintln!("Skipping column test: no tables in public schema");
         return;
     }
 
     let qualified = format!("public.{}", tables[0].name);
-    let columns = provider.get_columns(&qualified).await.expect("get_columns failed");
+    let columns = provider
+        .get_columns(&qualified)
+        .await
+        .expect("get_columns failed");
     assert!(!columns.is_empty(), "table should have at least one column");
     for col in &columns {
         assert!(!col.name.is_empty(), "column name should not be empty");
@@ -229,7 +257,10 @@ async fn test_postgres_get_indexes() {
     let mut provider = PostgresProvider::new();
     provider.connect(&config).await.expect("connect failed");
 
-    let tables = provider.get_tables("public").await.expect("get_tables failed");
+    let tables = provider
+        .get_tables("public")
+        .await
+        .expect("get_tables failed");
     if tables.is_empty() {
         eprintln!("Skipping index test: no tables in public schema");
         return;
@@ -254,7 +285,10 @@ async fn test_postgres_get_views() {
     let mut provider = PostgresProvider::new();
     provider.connect(&config).await.expect("connect failed");
 
-    let _views = provider.get_views("public").await.expect("get_views failed");
+    let _views = provider
+        .get_views("public")
+        .await
+        .expect("get_views failed");
     // Views may be empty, that's fine
 }
 
@@ -271,7 +305,10 @@ async fn test_postgres_get_extensions() {
     let mut provider = PostgresProvider::new();
     provider.connect(&config).await.expect("connect failed");
 
-    let _extensions = provider.get_extensions().await.expect("get_extensions failed");
+    let _extensions = provider
+        .get_extensions()
+        .await
+        .expect("get_extensions failed");
     // Extensions may be empty, that's fine
 }
 

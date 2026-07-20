@@ -2,7 +2,6 @@
 ///
 /// Requires a MongoDB instance running on 127.0.0.1:27017 (no auth).
 /// Override with MONGODB_HOST, MONGODB_PORT, MONGODB_DATABASE env vars.
-
 use dbrusty::database::provider::DatabaseProvider;
 use dbrusty::database::result::Value;
 use dbrusty::models::connection::{ConnectionConfig, DatabaseType};
@@ -89,7 +88,10 @@ async fn test_mongodb_insert_one() {
     provider.connect(&get_config().unwrap()).await.unwrap();
     let coll = coll_name("insert_one");
 
-    let q = format!(r#"{{"insertOne": "{}", "document": {{"name": "alice", "age": 30}}}}"#, coll);
+    let q = format!(
+        r#"{{"insertOne": "{}", "document": {{"name": "alice", "age": 30}}}}"#,
+        coll
+    );
     let r = provider.execute_query(&q).await.unwrap();
     assert!(!r.is_select, "insertOne should not be select");
     assert_eq!(r.rows_affected, 1, "should affect 1 row");
@@ -120,7 +122,10 @@ async fn test_mongodb_find_all() {
     provider.connect(&get_config().unwrap()).await.unwrap();
     let coll = coll_name("find_all");
 
-    let insert = format!(r#"{{"insertMany": "{}", "documents": [{{"v": 1}}, {{"v": 2}}]}}"#, coll);
+    let insert = format!(
+        r#"{{"insertMany": "{}", "documents": [{{"v": 1}}, {{"v": 2}}]}}"#,
+        coll
+    );
     provider.execute_query(&insert).await.unwrap();
 
     let q = format!(r#"{{"find": "{}"}}"#, coll);
@@ -177,7 +182,10 @@ async fn test_mongodb_update_one() {
     provider.connect(&get_config().unwrap()).await.unwrap();
     let coll = coll_name("update_one");
 
-    let insert = format!(r#"{{"insertOne": "{}", "document": {{"item": "x", "status": "old"}}}}"#, coll);
+    let insert = format!(
+        r#"{{"insertOne": "{}", "document": {{"item": "x", "status": "old"}}}}"#,
+        coll
+    );
     provider.execute_query(&insert).await.unwrap();
 
     let q = format!(
@@ -266,7 +274,10 @@ async fn test_mongodb_count() {
     );
     provider.execute_query(&insert).await.unwrap();
 
-    let q = format!(r#"{{"count": "{}", "filter": {{"a": {{"$gt": 1}}}}}}"#, coll);
+    let q = format!(
+        r#"{{"count": "{}", "filter": {{"a": {{"$gt": 1}}}}}}"#,
+        coll
+    );
     let r = provider.execute_query(&q).await.unwrap();
     assert!(r.is_select);
     assert_eq!(r.row_count(), 1);
@@ -292,7 +303,10 @@ async fn test_mongodb_distinct() {
     );
     provider.execute_query(&insert).await.unwrap();
 
-    let q = format!(r#"{{"distinct": "{}", "field": "color", "filter": {{}}}}"#, coll);
+    let q = format!(
+        r#"{{"distinct": "{}", "field": "color", "filter": {{}}}}"#,
+        coll
+    );
     let r = provider.execute_query(&q).await.unwrap();
     assert!(r.is_select);
     assert_eq!(r.row_count(), 2);
@@ -387,7 +401,10 @@ async fn test_mongodb_get_tables() {
 
     let tables = provider.get_tables(&db_name).await.unwrap();
     let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.iter().any(|n| *n == coll), "collection should appear in get_tables");
+    assert!(
+        names.iter().any(|n| *n == coll),
+        "collection should appear in get_tables"
+    );
 
     clear_collection(&provider, &coll).await;
 }
@@ -425,7 +442,10 @@ async fn test_mongodb_get_indexes() {
 
     let indexes = provider.get_indexes(&coll).await.unwrap();
     assert!(!indexes.is_empty(), "should have at least the _id index");
-    assert!(indexes.iter().any(|idx| idx.primary), "should have a primary index on _id");
+    assert!(
+        indexes.iter().any(|idx| idx.primary),
+        "should have a primary index on _id"
+    );
 
     clear_collection(&provider, &coll).await;
 }
@@ -463,7 +483,8 @@ async fn test_mongodb_explorer_flow() {
     assert!(
         databases.contains(&connected_db),
         "connected db '{}' should be in: {:?}",
-        connected_db, databases
+        connected_db,
+        databases
     );
 
     let mut schemas_data: Vec<(String, Vec<String>)> = Vec::new();
@@ -490,8 +511,15 @@ async fn test_mongodb_explorer_flow() {
         .iter()
         .find(|(s, _)| s == &connected_db)
         .expect("connected db should have schema data");
-    assert_eq!(db_schemas.1.len(), 1, "connected db should have 1 synthetic schema");
-    assert_eq!(db_schemas.1[0], connected_db, "synthetic schema should match db name");
+    assert_eq!(
+        db_schemas.1.len(),
+        1,
+        "connected db should have 1 synthetic schema"
+    );
+    assert_eq!(
+        db_schemas.1[0], connected_db,
+        "synthetic schema should match db name"
+    );
 
     // The flat layout key is "{db}.{db}"
     let flat_key = format!("{}.{}", connected_db, connected_db);
@@ -509,7 +537,8 @@ async fn test_mongodb_explorer_flow() {
     assert!(
         names.contains(&coll.as_str()),
         "explorer collection '{}' should be in tables: {:?}",
-        coll, names
+        coll,
+        names
     );
 
     // Cleanup

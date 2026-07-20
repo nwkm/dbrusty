@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, CellEditFocus, CellEditMode, Focus, QueryEditorFocus};
+use crate::widgets::mongo_doc_list::render_mongo_doc_list;
 
 fn render_cell_edit_popup(frame: &mut Frame, area: Rect, app: &App) {
     let popup_width = area.width.saturating_sub(10).min(60);
@@ -141,7 +142,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     let results_inner = results_block.inner(results_area);
     frame.render_widget(&results_block, results_area);
 
-    if !app.query_data.is_empty() && !app.query_columns.is_empty() {
+    if app.is_mongo_query() {
+        if let Some(documents) = app.mongo_raw_documents.as_deref() {
+            render_mongo_doc_list(
+                frame,
+                results_inner,
+                documents,
+                &app.mongo_doc_state,
+                results_focused,
+            );
+        }
+    } else if !app.query_data.is_empty() && !app.query_columns.is_empty() {
         let header_line = app
             .query_columns
             .iter()

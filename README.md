@@ -248,30 +248,36 @@ cargo fmt --check
 
 ## Roadmap
 
-| Milestone | Feature | Status |
-|-----------|---------|--------|
-| M1–M5 | Scaffold, core architecture, config, SQLite provider, connection UI | ✓ |
-| M6 | Database Explorer tree & Query Editor | **Current** |
-| M7 | Query execution & results viewer | ✓ (merged into M6) |
-| M8 | Data editing (grid edit, transactions) | Partial |
-| M9 | Schema management (CREATE/ALTER/DROP) | |
-| M10 | MySQL provider | |
-| M11 | PostgreSQL provider | ✓ (merged into M6) |
-| M12 | MongoDB provider | |
-| M13 | Redis provider | |
-| M14 | Global search | |
-| M15 | Import / Export (CSV, JSON, SQL) | |
-| M16 | Query history with search & tags | |
-| M17 | Bookmarks & favorites | |
-| M18 | Themes (dark, light, custom) | |
-| M19 | Configurable keybindings | |
-| M20 | Security (SSH tunnel, SSL/TLS) | |
-| M21 | Performance (virtual scrolling, caching) | |
-| M22 | Plugin system | |
-| M23 | Testing & CI/CD | |
-| M24 | Packaging (AppImage, DMG, MSI) | |
-| M25 | Documentation & user guide | |
-| M26+ | Stable release | |
+| Milestone | Feature | Key Deliverables | Status |
+|-----------|---------|------------------|--------|
+| M1 | Project scaffold | Cargo workspace, Tokio runtime, Ratatui/Crossterm init, page navigation, GitHub Actions, CI | ✓ |
+| M2 | Core architecture | `DatabaseProvider` trait, `ConnectionPool`, event loop, focus system, key/mouse dispatch | ✓ |
+| M3 | Configuration & storage | TOML config, XDG directories, connection persistence, OS keychain integration, structured logging | ✓ |
+| M4 | SQLite provider | Connect/ping, metadata queries (tables, columns, indexes, views), transactions, server info | ✓ |
+| M5 | Connection UI | Connection list with DB-type icons, add/edit/delete modals, status indicators, double-click connect | ✓ |
+| M6 | Database Explorer | Tree view: Server → Databases → Schemas → Tables/Views/Indexes/Functions/Procedures, lazy-loading columns on expand, sidebar detail panel with column info (type, PK, nullable, default), keyboard and mouse navigation | ✓ |
+| M7 | Query execution & results | Split editor/results layout, SQL execution (Ctrl+R), SELECT/non-SELECT detection, column headers, row/cell selection, horizontal/vertical scrolling (Ctrl+B/F/U/D), copy cell (Y), mouse scroll | ✓ |
+| M8 | Data editing | Grid cell editing via popup (Enter/Tab/Esc), Inspector pane (Alt+H) with inline editing, JSON tree viewer for nested data, row highlighting, cell edit with undo (Alt+Z), MongoDB document list inline editing | ✓ |
+| M9 | PostgreSQL provider | Connect/ping, metadata (tables, columns, indexes, views, sequences, triggers, functions, procedures, extensions, custom types), server info, transactions, chrono type support | ✓ |
+| M10 | MongoDB provider | Connect/ping, CRUD operations (insertOne/Many, updateOne/Many, deleteOne/Many, find, aggregate, count, distinct), collection/column/index metadata, explorer tree integration, JSON document viewer | ✓ |
+| M11 | Global search | Fuzzy-find across Explorer tree, table/column metadata, query text, result cells, with highlighted keywords, source-priority sorting, keyboard navigation (Ctrl+N/P) | ✓ |
+| M12 | MySQL provider | Connect/ping, metadata queries, CRUD, transactions | |
+| M13 | MariaDB provider | Connect/ping, metadata queries, CRUD, transactions | |
+| M14 | SQL Server provider | Connect/ping, metadata queries, CRUD, transactions | |
+| M15 | Redis provider | Key browser, TTL, streams, hashes, sets, lists, sorted sets, pub/sub | |
+| M16 | Schema management | CREATE/ALTER/DROP/RENAME tables, generate DDL, reverse engineer schema, schema diff | |
+| M17 | Import / Export | CSV, JSON, SQL, Excel, Parquet, XML, YAML, compressed export | |
+| M18 | Query history | History log, pinned queries, folders, tags, search, favorite, import/export | |
+| M19 | Bookmarks & favorites | Bookmark rows, tables, queries, connections, schemas | |
+| M20 | Themes | Dark theme (current), light theme, custom TOML themes, configurable colors | |
+| M21 | Configurable keybindings | User-defined key mappings in TOML, keybinding presets | |
+| M22 | Security | SSH tunnel, SSL/TLS, certificate management, read-only mode | |
+| M23 | Performance | Virtual scrolling, infinite scroll, dataset virtualization, lazy metadata loading, caching, incremental rendering | |
+| M24 | Plugin system | Database drivers, exporters, themes, editor extensions, macros, custom panels | |
+| M25 | Testing & CI/CD | Unit tests on all modules, integration tests per provider, snapshot UI tests, performance benchmarks, cross-platform CI | |
+| M26 | Packaging | AppImage, deb, rpm (Linux), DMG, Homebrew (macOS), MSI, portable EXE (Windows) | |
+| M27 | Documentation | Architecture docs, developer guide, contribution guide, user guide, keybinding reference, plugin guide, API docs | |
+| M28+ | Stable release | Polish, edge-case hardening, accessibility, public beta, v1.0 | |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed per-release notes.
 

@@ -166,6 +166,7 @@ Searches across: Explorer tree items, table/column metadata, query editor lines,
 | `e` | Edit connection |
 | `d` | Delete connection |
 | `Enter` | Connect / Confirm delete |
+| `Alt+Enter` | Disconnect (when selected connection is connected) |
 
 ### Connection Form
 

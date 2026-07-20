@@ -225,6 +225,20 @@ fn render_confirm_modal(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(hint_p, inner);
 }
 
+fn build_hints(app: &App) -> String {
+    let selected_conn = app.connections.get(app.conn_list_selected);
+    let is_connected = selected_conn.is_some_and(|c| Some(c.id) == app.pool.active_id);
+    let disconnect_hint = if is_connected {
+        "  Alt-Enter:Disconnect"
+    } else {
+        ""
+    };
+    format!(
+        " n:New  e:Edit  d:Delete  Enter:Connect{}  j/k:Navigate  q:Back ",
+        disconnect_hint
+    )
+}
+
 pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     let vertical = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]);
     let [list_area, key_hints_area] = vertical.areas(area);
@@ -241,7 +255,112 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         _ => {}
     }
 
-    let hints = " n:New  e:Edit  d:Delete  Enter:Connect  j/k:Navigate  q:Back ";
+    let hints = build_hints(app);
     let hint_p = Paragraph::new(hints).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(hint_p, key_hints_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::config::AppConfig;
+    use crate::models::connection::ConnectionConfig;
+
+    fn test_app() -> App {
+        App::with_config(AppConfig::default())
+    }
+
+    fn app_with_connections(count: usize) -> App {
+        let mut app = test_app();
+        app.connections = (0..count)
+            .map(|i| ConnectionConfig {
+                id: uuid::Uuid::from_u128(i as u128 + 1),
+                name: format!("conn-{}", i),
+                db_type: DatabaseType::Postgres,
+                host: "localhost".into(),
+                port: 5432,
+                database: "test".into(),
+                username: "user".into(),
+                group: None,
+                is_favorite: false,
+                ssl: false,
+                created_at: chrono::Utc::now(),
+                last_connected: None,
+                password: None,
+            })
+            .collect();
+        app
+    }
+
+    fn connect_nth(app: &mut App, index: usize) {
+        if let Some(conn) = app.connections.get(index) {
+            let id = conn.id;
+            app.pool
+                .connect(
+                    id,
+                    Box::new(crate::providers::sqlite::SqliteProvider::new()),
+                    conn,
+                )
+                .ok();
+        }
+    }
+
+    #[test]
+    fn hint_no_connections() {
+        let app = test_app();
+        let hints = build_hints(&app);
+        assert!(!hints.contains("Disconnect"));
+        assert!(hints.contains("n:New"));
+        assert!(hints.contains("q:Back"));
+    }
+
+    #[test]
+    fn hint_connection_not_connected() {
+        let app = app_with_connections(1);
+        let hints = build_hints(&app);
+        assert!(
+            !hints.contains("Disconnect"),
+            "should not show disconnect hint when not connected: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn hint_connection_is_connected() {
+        let mut app = app_with_connections(1);
+        connect_nth(&mut app, 0);
+        let hints = build_hints(&app);
+        assert!(
+            hints.contains("Disconnect"),
+            "should show disconnect hint when connected: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn hint_non_selected_connected() {
+        let mut app = app_with_connections(2);
+        app.conn_list_selected = 0;
+        connect_nth(&mut app, 1);
+        let hints = build_hints(&app);
+        assert!(
+            !hints.contains("Disconnect"),
+            "should not show disconnect for non-selected connected conn: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn hint_connected_then_different_selected() {
+        let mut app = app_with_connections(2);
+        connect_nth(&mut app, 0);
+        app.conn_list_selected = 0;
+        let hints = build_hints(&app);
+        assert!(hints.contains("Disconnect"));
+
+        app.conn_list_selected = 1;
+        let hints = build_hints(&app);
+        assert!(!hints.contains("Disconnect"));
+    }
 }

@@ -13,6 +13,7 @@ All notable changes to Dbrusty are documented here.
 - Row highlighting (yellow background, bold black text) on selected row in results view
 - Dynamic key hints in status bar that update based on focus and edit mode
 - Inspector focus cycling (Tab through Sidebar/Main/Inspector); Inspector hidden from cycle when toggled off
+- Connections pane: show `Alt-Enter:Disconnect` keybinding hint when the selected connection is currently connected
 
 ### Fixed
 - Missing `chrono` feature flag on sqlx dependency (PostgreSQL date/time columns returned null)

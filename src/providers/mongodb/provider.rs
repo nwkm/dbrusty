@@ -78,11 +78,11 @@ fn bson_to_value(bson: &Bson) -> Value {
         Bson::JavaScriptCodeWithScope(cws) => Value::Text(cws.code.clone()),
         Bson::Symbol(s) => Value::Text(s.clone()),
         Bson::DbPointer(ptr) => Value::Text(format!("{:?}", ptr)),
-        Bson::Document(d) => Value::Text(
+        Bson::Document(d) => Value::Json(
             serde_json::to_string(&doc_to_json_value(d))
                 .unwrap_or_else(|_| "<unserializable>".to_string()),
         ),
-        Bson::Array(arr) => Value::Text(
+        Bson::Array(arr) => Value::Json(
             serde_json::to_string(
                 &arr.iter().map(|v| bson_to_json_value(v)).collect::<Vec<_>>(),
             )

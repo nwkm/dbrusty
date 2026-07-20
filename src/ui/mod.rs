@@ -1,4 +1,4 @@
-mod layout;
+pub mod layout;
 pub mod pages;
 pub mod search;
 pub mod sidebar;

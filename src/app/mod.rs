@@ -271,6 +271,8 @@ pub struct App {
     pub result_scroll_v: usize,
     pub result_scroll_h: u16,
     pub global_search: Option<crate::ui::search::GlobalSearchState>,
+    pub json_tree_state: TreeState,
+    pub json_tree_cell: (usize, usize),
 }
 
 impl App {
@@ -292,27 +294,32 @@ impl App {
         self.status_message = msg;
     }
 
+    fn results_visible_rows(&self) -> usize {
+        self.main_rect.height.saturating_sub(4) as usize
+    }
+
+    fn max_result_scroll_h(&self) -> u16 {
+        let total: usize = self.query_col_widths.iter().copied().sum();
+        let separators = self.query_col_widths.len().saturating_sub(1) * 3;
+        (total + separators).saturating_sub(1) as u16
+    }
+
     fn clamp_result_scroll(&mut self) {
-        let lines: Vec<&str> = self.query_results.lines().collect();
-        let header_end = lines
-            .iter()
-            .position(|l| l.contains("---"))
-            .map(|i| i + 1)
-            .unwrap_or(1)
-            .min(lines.len());
-        let data_count = lines.len().saturating_sub(header_end);
-        let max_v = data_count.saturating_sub(1);
-        if self.result_scroll_v > max_v {
-            self.result_scroll_v = max_v;
-        }
-        let max_w = lines
-            .iter()
-            .map(|l| l.len())
-            .max()
-            .unwrap_or(0)
-            .saturating_sub(1) as u16;
-        if self.result_scroll_h > max_w {
-            self.result_scroll_h = max_w;
+        if !self.query_data.is_empty() {
+            self.result_scroll_v = self.result_scroll_v.min(self.query_data.len().saturating_sub(1));
+            let max_h = self.max_result_scroll_h();
+            self.result_scroll_h = self.result_scroll_h.min(max_h);
+        } else {
+            let lines: Vec<&str> = self.query_results.lines().collect();
+            let max_v = lines.len().saturating_sub(1);
+            self.result_scroll_v = self.result_scroll_v.min(max_v);
+            let max_h = lines
+                .iter()
+                .map(|l| l.len())
+                .max()
+                .unwrap_or(0)
+                .saturating_sub(1) as u16;
+            self.result_scroll_h = self.result_scroll_h.min(max_h);
         }
     }
 
@@ -375,6 +382,8 @@ impl App {
             result_scroll_v: 0,
             result_scroll_h: 0,
             global_search: None,
+            json_tree_state: TreeState::new(Vec::new()),
+            json_tree_cell: (usize::MAX, usize::MAX),
         };
         app.set_status("Ready");
         app
@@ -557,21 +566,15 @@ impl App {
         match self.pool.get_active() {
             Some(provider) => match provider.execute_query(sql).await {
                 Ok(result) => {
-                    let mut output = String::new();
-
-                    // Duration at the top
-                    output.push_str(&format!("({:?})", result.duration));
-                    output.push('\n');
-
-                    // Compute column widths
+                    // Compute column widths (sample first 1000 rows for performance)
+                    let sample_size = 1000.min(result.rows.len());
                     let col_widths: Vec<usize> = result
                         .columns
                         .iter()
                         .enumerate()
                         .map(|(ci, col)| {
                             let header_len = col.name.len();
-                            let max_data = result
-                                .rows
+                            let max_data = result.rows[..sample_size]
                                 .iter()
                                 .map(|row| row.get(ci).map(|v| v.to_string().len()).unwrap_or(0))
                                 .max()
@@ -580,55 +583,49 @@ impl App {
                         })
                         .collect();
 
-                    // Column headers
-                    for (i, col) in result.columns.iter().enumerate() {
-                        if i > 0 {
-                            output.push_str(" | ");
+                    if result.is_select {
+                        self.query_results.clear();
+                        self.query_columns = result.columns.iter().map(|c| c.name.clone()).collect();
+                        self.query_data = result
+                            .rows
+                            .iter()
+                            .map(|row| row.iter().map(|v| v.to_string()).collect())
+                            .collect();
+                        self.query_data_typed = result.rows.clone();
+                        self.query_column_info = result.columns.clone();
+                        self.query_col_widths = col_widths;
+                    } else {
+                        let mut output = String::new();
+                        output.push_str(&format!("({:?})", result.duration));
+                        output.push('\n');
+                        for (i, col) in result.columns.iter().enumerate() {
+                            if i > 0 { output.push_str(" | "); }
+                            output.push_str(&format!("{:width$}", col.name, width = col_widths[i]));
                         }
-                        output.push_str(&format!("{:width$}", col.name, width = col_widths[i]));
-                    }
-                    output.push('\n');
-                    // Separator
-                    for (i, w) in col_widths.iter().enumerate() {
-                        if i > 0 {
-                            output.push_str("-+-");
+                        output.push('\n');
+                        for (i, w) in col_widths.iter().enumerate() {
+                            if i > 0 { output.push_str("-+-"); }
+                            for _ in 0..*w { output.push('-'); }
                         }
-                        for _ in 0..*w {
-                            output.push('-');
-                        }
-                    }
-                    output.push('\n');
-
-                    // Rows
-                    for row in &result.rows {
-                        for (i, val) in row.iter().enumerate() {
-                            if i > 0 {
-                                output.push_str(" | ");
+                        output.push('\n');
+                        for row in &result.rows {
+                            for (i, val) in row.iter().enumerate() {
+                                if i > 0 { output.push_str(" | "); }
+                                output.push_str(&format!("{:width$}", val.to_string(), width = col_widths[i]));
                             }
-                            output.push_str(&format!("{:width$}", val.to_string(), width = col_widths[i]));
+                            output.push('\n');
                         }
+                        output.push_str(&format!("{} rows affected", result.rows_affected));
                         output.push('\n');
-                    }
-
-                    if !result.is_select {
-                        output.push_str(&format!(
-                            "{} rows affected",
-                            result.rows_affected
-                        ));
-                        output.push('\n');
+                        self.query_results = output;
+                        self.query_columns.clear();
+                        self.query_data.clear();
+                        self.query_data_typed.clear();
+                        self.query_column_info.clear();
+                        self.query_col_widths.clear();
                     }
                     self.result_scroll_v = 0;
                     self.result_scroll_h = 0;
-                    self.query_results = output;
-                    self.query_columns = result.columns.iter().map(|c| c.name.clone()).collect();
-                    self.query_data = result
-                        .rows
-                        .iter()
-                        .map(|row| row.iter().map(|v| v.to_string()).collect())
-                        .collect();
-                    self.query_data_typed = result.rows.clone();
-                    self.query_column_info = result.columns.clone();
-                    self.query_col_widths = col_widths;
                     self.inspector_scroll = 0;
                     self.selected_row = 0;
                     self.selected_col = 0;
@@ -741,11 +738,7 @@ impl App {
             return false;
         }
 
-        let data_height = self
-            .main_rect
-            .height
-            .saturating_sub(2)
-            .saturating_sub(2) as usize;
+        let data_height = self.results_visible_rows();
 
         match key.code {
             KeyCode::Right => {
@@ -754,6 +747,7 @@ impl App {
                     self.selected_col += 1;
                 }
                 self.ensure_cell_visible(data_height);
+                self.rebuild_json_tree();
                 true
             }
             KeyCode::Left => {
@@ -762,6 +756,7 @@ impl App {
                     self.selected_col -= 1;
                 }
                 self.ensure_cell_visible(data_height);
+                self.rebuild_json_tree();
                 true
             }
             KeyCode::Down => {
@@ -770,6 +765,7 @@ impl App {
                     self.selected_row += 1;
                 }
                 self.ensure_cell_visible(data_height);
+                self.rebuild_json_tree();
                 true
             }
             KeyCode::Up => {
@@ -778,6 +774,35 @@ impl App {
                     self.selected_row -= 1;
                 }
                 self.ensure_cell_visible(data_height);
+                self.rebuild_json_tree();
+                true
+            }
+            KeyCode::PageUp => {
+                self.inspector_edit_col = None;
+                self.selected_row = self.selected_row.saturating_sub(data_height);
+                self.ensure_cell_visible(data_height);
+                self.rebuild_json_tree();
+                true
+            }
+            KeyCode::PageDown => {
+                self.inspector_edit_col = None;
+                self.selected_row = self.selected_row.saturating_add(data_height).min(self.query_data.len().saturating_sub(1));
+                self.ensure_cell_visible(data_height);
+                self.rebuild_json_tree();
+                true
+            }
+            KeyCode::Home => {
+                self.inspector_edit_col = None;
+                self.selected_row = 0;
+                self.ensure_cell_visible(data_height);
+                self.rebuild_json_tree();
+                true
+            }
+            KeyCode::End => {
+                self.inspector_edit_col = None;
+                self.selected_row = self.query_data.len().saturating_sub(1);
+                self.ensure_cell_visible(data_height);
+                self.rebuild_json_tree();
                 true
             }
             KeyCode::Enter => {
@@ -837,8 +862,17 @@ impl App {
                         if self.selected_row < self.query_data_typed.len()
                             && edit_col < self.query_data_typed[self.selected_row].len()
                         {
-                            self.query_data_typed[self.selected_row][edit_col] =
-                                Value::Text(self.inspector_edit_value.clone());
+                            let original = &self.query_data_typed[self.selected_row][edit_col];
+                            match original {
+                                Value::Json(_) => {
+                                    self.query_data_typed[self.selected_row][edit_col] =
+                                        Value::Json(self.inspector_edit_value.clone());
+                                }
+                                _ => {
+                                    self.query_data_typed[self.selected_row][edit_col] =
+                                        Value::Text(self.inspector_edit_value.clone());
+                                }
+                            }
                         }
                     }
                     self.inspector_edit_col = None;
@@ -917,6 +951,59 @@ impl App {
             return true;
         }
 
+        // JSON tree navigation when selected cell is JSON
+        let is_json_cell = self
+            .query_data_typed
+            .get(self.selected_row)
+            .and_then(|r| r.get(self.selected_col))
+            .and_then(|v| v.json_str())
+            .map(|s| s.starts_with('{') || s.starts_with('['))
+            .unwrap_or(false);
+
+        if is_json_cell {
+            self.rebuild_json_tree();
+            let visible_height = self.inspector_rect.height.saturating_sub(2) as usize;
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.json_tree_state.select_down();
+                    self.json_tree_state.adjust_offset(visible_height);
+                    return true;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.json_tree_state.select_up();
+                    self.json_tree_state.adjust_offset(visible_height);
+                    return true;
+                }
+                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                    self.json_tree_state.toggle_selected();
+                    self.json_tree_state.adjust_offset(visible_height);
+                    return true;
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    let id = self.json_tree_state.selected_id();
+                    if let Some(ref id) = id {
+                        if self.json_tree_state.is_item_expanded(id) {
+                            self.json_tree_state.toggle_by_id(id);
+                        } else {
+                            self.json_tree_state.select_up();
+                        }
+                    }
+                    self.json_tree_state.adjust_offset(visible_height);
+                    return true;
+                }
+                KeyCode::Char('g') => {
+                    self.json_tree_state.go_to_first();
+                    self.json_tree_state.offset = 0;
+                    return true;
+                }
+                KeyCode::Char('G') => {
+                    self.json_tree_state.go_to_last();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
         // Alt+Z undo
         if key.code == KeyCode::Char('z') && key.modifiers == KeyModifiers::ALT {
             if let Some((row, col, original)) = self.inspector_saved_value.take() {
@@ -925,7 +1012,15 @@ impl App {
                     if row < self.query_data_typed.len()
                         && col < self.query_data_typed[row].len()
                     {
-                        self.query_data_typed[row][col] = Value::Text(original);
+                        let current = &self.query_data_typed[row][col];
+                        match current {
+                            Value::Json(_) => {
+                                self.query_data_typed[row][col] = Value::Json(original);
+                            }
+                            _ => {
+                                self.query_data_typed[row][col] = Value::Text(original);
+                            }
+                        }
                     }
                 }
                 self.set_status("Value restored");
@@ -973,6 +1068,19 @@ impl App {
             if self.inspector_edit_col.is_some() {
                 self.key_hints =
                     " Esc:Cancel | Enter:Save | Alt+Z:Undo | Alt+H:Inspector".to_string();
+                return;
+            }
+            let is_json_cell = self
+                .query_data_typed
+                .get(self.selected_row)
+                .and_then(|r| r.get(self.selected_col))
+                .and_then(|v| v.json_str())
+                .map(|s| s.starts_with('{') || s.starts_with('['))
+                .unwrap_or(false);
+            if is_json_cell {
+                self.key_hints =
+                    " j/k:Navigate | Enter:Toggle | h:Collapse | l:Expand | g/G:Top/Bot"
+                        .to_string();
             } else {
                 self.key_hints =
                     " j/k:Scroll | g/G:Top/Bot | Click:Edit | Alt+Z:Undo | Alt+H:Inspector"
@@ -1016,54 +1124,45 @@ impl App {
         {
             let old_val = self.query_data[self.selected_row][self.selected_col].clone();
             self.query_data[self.selected_row][self.selected_col] = new_val.clone();
+            if self.selected_row < self.query_data_typed.len()
+                && self.selected_col < self.query_data_typed[self.selected_row].len()
+            {
+                let typed = &self.query_data_typed[self.selected_row][self.selected_col];
+                match typed {
+                    Value::Json(_) => {
+                        self.query_data_typed[self.selected_row][self.selected_col] =
+                            Value::Json(new_val.clone());
+                    }
+                    _ => {
+                        self.query_data_typed[self.selected_row][self.selected_col] =
+                            Value::Text(new_val.clone());
+                    }
+                }
+            }
             self.cell_edit_mode = CellEditMode::Inactive;
             self.set_status(format!(
                 "Cell [{}, {}] updated: \"{}\" -> \"{}\"",
                 self.selected_row, self.selected_col, old_val, new_val
             ));
-            self.rebuild_query_results();
         }
     }
 
-    fn rebuild_query_results(&mut self) {
-        let mut output = String::new();
-        output.push('\n');
-
-        for (i, name) in self.query_columns.iter().enumerate() {
-            if i > 0 {
-                output.push_str(" | ");
-            }
-            output.push_str(&format!(
-                "{:width$}",
-                name,
-                width = self.query_col_widths[i]
-            ));
+    fn rebuild_json_tree(&mut self) {
+        let cell = (self.selected_row, self.selected_col);
+        if self.json_tree_cell == cell {
+            return;
         }
-        output.push('\n');
-        for (i, w) in self.query_col_widths.iter().enumerate() {
-            if i > 0 {
-                output.push_str("-+-");
-            }
-            for _ in 0..*w {
-                output.push('-');
+        self.json_tree_cell = cell;
+        if let Some(typed) = self.query_data_typed.get(self.selected_row)
+            .and_then(|r| r.get(self.selected_col))
+        {
+            if let Some(json) = typed.json_str() {
+                let items = crate::ui::layout::parse_json_tree(json);
+                self.json_tree_state = TreeState::new(items);
+                return;
             }
         }
-        output.push('\n');
-
-        for row in &self.query_data {
-            for (i, val) in row.iter().enumerate() {
-                if i > 0 {
-                    output.push_str(" | ");
-                }
-                output.push_str(&format!(
-                    "{:width$}",
-                    val,
-                    width = self.query_col_widths[i]
-                ));
-            }
-            output.push('\n');
-        }
-        self.query_results = output;
+        self.json_tree_state = TreeState::new(Vec::new());
     }
 
     fn ensure_cell_visible(&mut self, data_height: usize) {
@@ -1228,6 +1327,9 @@ impl App {
             KeyCode::Char('h') if key.modifiers == KeyModifiers::ALT => {
                 self.show_inspector = !self.show_inspector;
                 self.inspector_scroll = 0;
+                if self.show_inspector {
+                    self.rebuild_json_tree();
+                }
                 if !self.show_inspector && self.focus == Focus::Inspector {
                     self.focus = Focus::Main;
                     self.query_editor_focus = QueryEditorFocus::Results;
@@ -1821,12 +1923,14 @@ impl App {
                     QueryEditorFocus::Results => {
                         if self.show_inspector {
                             self.focus = Focus::Inspector;
+                            self.rebuild_json_tree();
                         } else {
                             self.focus = Focus::Sidebar;
                         }
                     }
                 },
                 Focus::Inspector => {
+                    self.rebuild_json_tree();
                     self.focus = Focus::Sidebar;
                 }
             }
@@ -1853,6 +1957,7 @@ impl App {
                 Focus::Sidebar => {
                     if self.show_inspector {
                         self.focus = Focus::Inspector;
+                        self.rebuild_json_tree();
                     } else {
                         self.focus = Focus::Main;
                         self.query_editor_focus = QueryEditorFocus::Results;

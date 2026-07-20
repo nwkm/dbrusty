@@ -5,10 +5,12 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use serde_json;
 
 use crate::app::{App, Focus, InputMode, Page};
 use crate::ui::pages;
 use crate::ui::sidebar;
+use crate::widgets::tree::{TreeItem, TreeState};
 
 pub fn render_layout(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -63,6 +65,129 @@ fn render_topbar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(topbar, area);
 }
 
+pub fn parse_json_tree(json_str: &str) -> Vec<TreeItem> {
+    match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(val) => {
+            let mut items = json_to_items(&val, 0);
+            for item in &mut items {
+                item.expanded = true;
+            }
+            items
+        }
+        Err(_) => vec![TreeItem::leaf("json:error", json_str, 0)],
+    }
+}
+
+fn json_to_items(val: &serde_json::Value, depth: usize) -> Vec<TreeItem> {
+    match val {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| bson_json_to_item(k, v, depth))
+            .collect(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .enumerate()
+            .map(|(i, v)| bson_json_to_item(&format!("[{}]", i), v, depth))
+            .collect(),
+        _ => vec![TreeItem::leaf("json:root", &format_json_val(val), depth)],
+    }
+}
+
+fn format_json_val(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => format!("\"{}\"", s),
+        serde_json::Value::Object(m) if m.is_empty() => "{}".to_string(),
+        serde_json::Value::Object(_) => "{…}".to_string(),
+        serde_json::Value::Array(a) if a.is_empty() => "[]".to_string(),
+        serde_json::Value::Array(_) => "[…]".to_string(),
+    }
+}
+
+fn bson_json_to_item(key: &str, val: &serde_json::Value, depth: usize) -> TreeItem {
+    let id = format!("json:{}:{}", depth, key);
+    match val {
+        serde_json::Value::Object(map) => {
+            if map.is_empty() {
+                return TreeItem::leaf(&id, &format!("{}: {{}}", key), depth);
+            }
+            let children: Vec<TreeItem> = map
+                .iter()
+                .map(|(k, v)| bson_json_to_item(k, v, depth + 1))
+                .collect();
+            let label = format!("{}: {{{}}}", key, children.len());
+            TreeItem::branch(&id, &label, depth, children)
+        }
+        serde_json::Value::Array(arr) => {
+            if arr.is_empty() {
+                return TreeItem::leaf(&id, &format!("{}: []", key), depth);
+            }
+            let children: Vec<TreeItem> = arr
+                .iter()
+                .enumerate()
+                .map(|(i, v)| bson_json_to_item(&format!("[{}]", i), v, depth + 1))
+                .collect();
+            let label = format!("{}: [{}]", key, children.len());
+            TreeItem::branch(&id, &label, depth, children)
+        }
+        serde_json::Value::String(s) => TreeItem::leaf(&id, &format!("{}: \"{}\"", key, s), depth),
+        serde_json::Value::Number(n) => TreeItem::leaf(&id, &format!("{}: {}", key, n), depth),
+        serde_json::Value::Bool(b) => TreeItem::leaf(&id, &format!("{}: {}", key, b), depth),
+        serde_json::Value::Null => TreeItem::leaf(&id, &format!("{}: null", key), depth),
+    }
+}
+
+fn render_json_tree_content(frame: &mut Frame, area: Rect, state: &TreeState, focused: bool) {
+    let visible_height = area.height as usize;
+    let items = state.flattened();
+    let max_offset = items.len().saturating_sub(visible_height);
+    let offset = state.offset.min(max_offset);
+    let sel = state.selected.min(items.len().saturating_sub(1));
+    // Ensure selected is in view (read-only approximation of adjust_offset)
+    let offset = if sel < offset {
+        sel
+    } else if sel >= offset + visible_height && sel >= visible_height {
+        sel.saturating_add(1).saturating_sub(visible_height)
+    } else {
+        offset
+    };
+    let offset = offset.min(max_offset);
+
+    let lines: Vec<Line> = items
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible_height)
+        .map(|(idx, item)| {
+            let is_selected = idx == state.selected;
+            let indent = "  ".repeat(item.depth);
+            let icon = match (item.has_children, item.expanded) {
+                (true, true) => "\u{25bc} ",
+                (true, false) => "\u{25b6} ",
+                (false, _) => "  ",
+            };
+            let label = format!("{}{}{}", indent, icon, item.label);
+            let style = if is_selected && focused {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_selected {
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(label, style))
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
 fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Inspector;
     let border_color = if focused { Color::Cyan } else { Color::White };
@@ -80,6 +205,60 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     if app.selected_row >= app.query_data.len() {
+        return;
+    }
+
+    // Check if the selected cell contains JSON — show tree viewer in inspector
+    let is_json_cell = app
+        .query_data_typed
+        .get(app.selected_row)
+        .and_then(|r| r.get(app.selected_col))
+        .and_then(|v| v.json_str())
+        .map(|s| s.starts_with('{') || s.starts_with('['))
+        .unwrap_or(false);
+
+    if is_json_cell && focused {
+        let col_name = app
+            .query_columns
+            .get(app.selected_col)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let type_badge = app
+            .query_data_typed
+            .get(app.selected_row)
+            .and_then(|r| r.get(app.selected_col))
+            .map(|v| v.type_name())
+            .unwrap_or("");
+
+        let header_span = Line::from(vec![
+            Span::styled(
+                format!(" {} ", col_name),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {} ", type_badge),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+        let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
+        frame.render_widget(Paragraph::new(Text::from(vec![header_span])), header_area);
+
+        let tree_area = Rect::new(
+            inner.x,
+            inner.y + 1,
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+        render_json_tree_content(frame, tree_area, &app.json_tree_state, true);
+        return;
+    }
+
+    if is_json_cell {
+        // Show tree in unfocused state too
+        let tree_area = Rect::new(inner.x, inner.y, inner.width, inner.height);
+        render_json_tree_content(frame, tree_area, &app.json_tree_state, false);
         return;
     }
 

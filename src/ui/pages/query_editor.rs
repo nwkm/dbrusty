@@ -202,11 +202,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
                 data_height,
             );
 
-            let data_lines: Vec<Line> = app
-                .query_data
+            // Virtual scrolling: only render visible rows
+            let visible_start = app.result_scroll_v;
+            let visible_end = (visible_start + data_height as usize).min(app.query_data.len());
+
+            let data_lines: Vec<Line> = app.query_data[visible_start..visible_end]
                 .iter()
                 .enumerate()
-                .map(|(ri, row)| {
+                .map(|(i, row)| {
+                    let ri = visible_start + i;
                     let s = row
                         .iter()
                         .enumerate()
@@ -233,8 +237,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
                 .collect();
 
             frame.render_widget(
-                Paragraph::new(Text::from(data_lines))
-                    .scroll((app.result_scroll_v as u16, app.result_scroll_h)),
+                Paragraph::new(Text::from(data_lines)).scroll((0, app.result_scroll_h)),
                 data_area,
             );
         }

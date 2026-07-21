@@ -43,6 +43,14 @@ path = "src/main.rs"
 name = "seed_postgresql"
 path = "src/bin/seed_postgresql.rs"
 
+[[bin]]
+name = "seed_mysql"
+path = "src/bin/seed_mysql.rs"
+
+[[bin]]
+name = "seed_mariadb"
+path = "src/bin/seed_mariadb.rs"
+
 [[bench]]
 name = "scrolling"
 harness = false

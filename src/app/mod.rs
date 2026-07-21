@@ -24,7 +24,9 @@ use crate::database::provider::DatabaseProvider;
 use crate::database::result::Value;
 use crate::database::types::ColumnInfo;
 use crate::models::connection::{ConnectionConfig, DatabaseType};
+use crate::providers::mariadb::MariadbProvider;
 use crate::providers::mongodb::MongoProvider;
+use crate::providers::mysql::MysqlProvider;
 use crate::providers::postgres::PostgresProvider;
 use crate::providers::sqlite::SqliteProvider;
 use crate::storage;
@@ -525,6 +527,8 @@ impl App {
         let mut provider: Box<dyn DatabaseProvider> = match conn.db_type {
             DatabaseType::Postgres => Box::new(PostgresProvider::new()),
             DatabaseType::SQLite => Box::new(SqliteProvider::new()),
+            DatabaseType::MySQL => Box::new(MysqlProvider::new()),
+            DatabaseType::MariaDB => Box::new(MariadbProvider::new()),
             DatabaseType::MongoDB => Box::new(MongoProvider::new()),
             _ => {
                 self.set_status(format!(

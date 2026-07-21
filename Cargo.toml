@@ -51,6 +51,10 @@ path = "src/bin/seed_mysql.rs"
 name = "seed_mariadb"
 path = "src/bin/seed_mariadb.rs"
 
+[[bin]]
+name = "seed_mongodb"
+path = "src/bin/seed_mongodb.rs"
+
 [[bench]]
 name = "scrolling"
 harness = false

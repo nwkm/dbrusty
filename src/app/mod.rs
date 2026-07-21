@@ -939,7 +939,7 @@ impl App {
 
         let visible_height = self.main_rect.height.saturating_sub(4) as usize;
 
-        let step = 3usize;
+        let step = 1usize;
 
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {

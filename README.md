@@ -6,7 +6,7 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 
 ## Status
 
-**Current milestone: M6/30 — Database Explorer & Query Editor.** PostgreSQL and SQLite are fully supported. MySQL, MariaDB, SQL Server, MongoDB, and Redis providers are defined but not yet implemented (the architecture is ready — implement the trait).
+**Current milestone: M11/30 — Global Search & MongoDB Provider.** PostgreSQL, SQLite, and MongoDB are fully supported. MySQL, MariaDB, SQL Server, and Redis providers are defined but not yet implemented (the architecture is ready — implement the trait).
 
 ## Features
 
@@ -22,19 +22,20 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 ### Database Providers
 | Provider | Status |
 |----------|--------|
-| PostgreSQL | Full support (tables, columns, indexes, views, sequences, triggers, functions, procedures, extensions, custom types, transactions, server info) |
+| PostgreSQL | Full support (tables, columns, indexes, views, sequences, triggers, functions, procedures, extensions, custom types, transactions, server info, chrono types) |
 | SQLite | Full support (tables, columns, indexes, views, transactions, server info) |
+| MongoDB | Full support (connect/ping, CRUD — insert/find/update/delete, aggregate, count, distinct, collStats, explain, collection/index metadata, explorer tree integration, JSON document viewer with inline editing, flat document list tree view) |
 | MySQL | Not yet implemented |
 | MariaDB | Not yet implemented |
 | SQL Server | Not yet implemented |
-| MongoDB | Not yet implemented |
 | Redis | Not yet implemented |
 
 ### Database Explorer
 - Tree view: Server → Databases → Schemas → Tables/Views/Indexes/Functions/Procedures/Triggers/Sequences
 - Lazy-loading columns on expand
 - Expand/collapse with keyboard and mouse double-click
-- Detail panel showing column info (type, PK, nullable, default)
+- Detail panel showing column info (type, PK, nullable, default, FK)
+- Double-click table name to auto-generate and run `SELECT * FROM "table" LIMIT 1000 OFFSET 0`
 
 ### Query Editor
 - Split layout: editor (25%) / results (75%)
@@ -42,22 +43,42 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 - Text editing with cursor navigation (Home, End, arrows)
 - Results display with column headers, row highlighting, and scrollable viewport
 - Cell selection with arrow keys / Tab
-- Cell editing via popup dialog
+- Cell editing via popup dialog (Enter edit, Tab/Enter confirm, Esc cancel)
 - Copy cell value to clipboard (Y key)
 - Horizontal (Ctrl+B/F) and vertical (Ctrl+U/D) scrolling
+- Row highlighting (yellow/bold-black) on selected row
+- Dynamic key hints in status bar that update based on focus and edit mode
 
 ### Inspector Pane
 - Column-by-column detail of selected row with type badges
 - Inline editing (click value, Enter save, Esc cancel, Alt+Z undo)
+- Collapsible JSON tree viewer for nested data
 - Toggleable visibility (Alt+H)
 - Keyboard navigation (j/k scroll, g/G top/bottom, Home/End in edit)
 
 ### Connections
 - Connection list with database-type icons and status indicators
-- Add/Edit/Delete connections
-- Connection form with 7 fields and database type cycling
+- Add/Edit/Delete connections with confirmation dialog
+- Connection form with 7 fields and DB type cycling (port auto-fills)
 - Password saved to OS keychain on connect
-- Double-click to connect
+- Double-click to connect, Alt+Enter to disconnect
+
+### MongoDB Document Viewer
+- Flat document list with expandable/collapsible nested fields and arrays
+- Expand all (O) / collapse all (O) per document
+- Arrow-key navigation (j/k in 3-line steps, Ctrl+U/D for page up/down)
+- Inline value editing via Enter on any scalar field
+- Type badges on every field
+- Copy value to clipboard (Y)
+- Syntax-highlighted value display (strings green, numbers blue, dates blue, ObjectId red)
+
+### Global Search (Alt+F)
+- Fuzzy-matches across Explorer tree, table/column metadata, query text, and result cells
+- Color-coded source badges (Explorer=Cyan, Metadata=Yellow, Query=Green, Results=Magenta)
+- Consecutive-character and start-of-word scoring
+- Source-priority sorting (Results → Metadata → Explorer → Query → History)
+- Highlighted match characters in results
+- Keyboard navigation (Ctrl+N/P, PageUp/Down, Enter to jump, Esc to close)
 
 ### Pages
 | Key | Page | Status |
@@ -70,6 +91,9 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 | 6 | Favorites | Placeholder |
 | 7 | Schema Browser | Placeholder |
 | 8 | Logs | ✓ |
+| 9 | Settings | Placeholder |
+| 0 | Help | ✓ |
+| - | About | Placeholder |
 
 ## Quick Start
 
@@ -81,7 +105,7 @@ cargo run --release
 ### Prerequisites
 
 - Rust 1.81+
-- PostgreSQL or SQLite database (or use the built-in connection form to configure)
+- PostgreSQL, SQLite, or MongoDB database (or use the built-in connection form to configure)
 
 ## Keybindings
 
@@ -89,7 +113,7 @@ cargo run --release
 
 | Key | Action |
 |-----|--------|
-| `1`–`8` | Switch pages |
+| `1`–`0` | Switch pages |
 | `q` | Quit |
 | `?` | Help |
 | `Tab` | Cycle focus forward |
@@ -154,6 +178,23 @@ Searches across: Explorer tree items, table/column metadata, query editor lines,
 | `Esc` | Cancel edit |
 | `Alt+Z` | Undo last saved edit |
 
+### MongoDB Document Viewer
+
+| Key | Action |
+|-----|--------|
+| `j` / `Down` | Scroll down (3 lines) |
+| `k` / `Up` | Scroll up (3 lines) |
+| `l` | Expand nested field |
+| `h` | Collapse / Go to parent |
+| `Enter` | Edit scalar value |
+| `g` | Go to first line |
+| `G` | Go to last line |
+| `Y` | Copy value |
+| `O` | Expand all fields in current document |
+| `o` | Collapse all fields in current document |
+| `Ctrl+U` / `Ctrl+D` | Page up / down |
+| `Esc` | Clear selection / Focus editor |
+
 ### Connections Page
 
 | Key | Action |
@@ -194,14 +235,14 @@ log_level = "info"
 src/
   app/          — Application state, event loop, key/mouse handling
   config/       — TOML configuration loading
-  database/     — DatabaseProvider trait, metadata cache, pool, data types
+  database/     — DatabaseProvider trait, metadata cache, pool, data types, result
   events/       — AppEvent enum (reserved for future event system)
   logging/      — Tracing initialization
   models/       — Connection config, data models
-  providers/    — Database driver implementations (postgres/, sqlite/)
+  providers/    — Database driver implementations (mongodb/, postgres/, sqlite/)
   storage/      — Connection persistence, OS keychain
-  ui/           — Layout, pages (dashboard, connections, explorer, query_editor, ...), sidebar widgets
-  widgets/      — Reusable UI components (input field, tree widget)
+  ui/           — Layout, pages (dashboard, connections, explorer, query_editor, ...), sidebar, search
+  widgets/      — Reusable UI components (input field, tree widget, mongo doc list)
 ```
 
 ## Architecture
@@ -216,7 +257,7 @@ Dbrusty uses a clean architecture with async Tokio runtime:
 ├──────────────────────────────────────────────────────────┤
 │  DatabaseProvider Trait (abstract SQL/NOSQL interface)    │
 ├──────────────────────────────────────────────────────────┤
-│  PostgresProvider │ SqliteProvider │ ... (future)         │
+│  PostgresProvider │ SqliteProvider │ MongoProvider │ ...  │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -237,6 +278,9 @@ cargo test
 
 # PostgreSQL integration tests (requires DATABASE_USERNAME env)
 DATABASE_USERNAME=postgres cargo test --test postgres -- --ignored
+
+# MongoDB integration tests (requires MongoDB on localhost:27017)
+cargo test --test mongodb -- --ignored
 ```
 
 ## Lint
@@ -261,7 +305,7 @@ cargo fmt --check
 | M9 | PostgreSQL provider | Connect/ping, metadata (tables, columns, indexes, views, sequences, triggers, functions, procedures, extensions, custom types), server info, transactions, chrono type support | ✓ |
 | M10 | MongoDB provider | Connect/ping, CRUD operations (insertOne/Many, updateOne/Many, deleteOne/Many, find, aggregate, count, distinct), collection/column/index metadata, explorer tree integration, JSON document viewer | ✓ |
 | M11 | Global search | Fuzzy-find across Explorer tree, table/column metadata, query text, result cells, with highlighted keywords, source-priority sorting, keyboard navigation (Ctrl+N/P) | ✓ |
-| M12 | MySQL provider | Connect/ping, metadata queries, CRUD, transactions | |
+| M12 | MySQL provider | Connect/ping, metadata queries, CRUD, transactions | ◐ |
 | M13 | MariaDB provider | Connect/ping, metadata queries, CRUD, transactions | |
 | M14 | SQL Server provider | Connect/ping, metadata queries, CRUD, transactions | |
 | M15 | Redis provider | Key browser, TTL, streams, hashes, sets, lists, sorted sets, pub/sub | |
@@ -274,7 +318,7 @@ cargo fmt --check
 | M22 | Security | SSH tunnel, SSL/TLS, certificate management, read-only mode | |
 | M23 | Performance | Virtual scrolling, infinite scroll, dataset virtualization, lazy metadata loading, caching, incremental rendering | |
 | M24 | Plugin system | Database drivers, exporters, themes, editor extensions, macros, custom panels | |
-| M25 | Testing & CI/CD | Unit tests on all modules, integration tests per provider, snapshot UI tests, performance benchmarks, cross-platform CI | |
+| M25 | Testing & CI/CD | Unit tests on all modules, integration tests per provider (PostgreSQL, MongoDB), snapshot UI tests, performance benchmarks, cross-platform CI | |
 | M26 | Packaging | AppImage, deb, rpm (Linux), DMG, Homebrew (macOS), MSI, portable EXE (Windows) | |
 | M27 | Documentation | Architecture docs, developer guide, contribution guide, user guide, keybinding reference, plugin guide, API docs | |
 | M28+ | Stable release | Polish, edge-case hardening, accessibility, public beta, v1.0 | |

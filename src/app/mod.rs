@@ -2260,7 +2260,19 @@ impl App {
                                 )
                             }
                         } else {
-                            format!("SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n", short)
+                            let db_type = self.active_db_type();
+                            let q = if db_type == Some(DatabaseType::MySQL)
+                                || db_type == Some(DatabaseType::MariaDB)
+                            {
+                                '`'
+                            } else {
+                                '"'
+                            };
+                            format!(
+                                "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
+                                q = q,
+                                short = short
+                            )
                         };
                         self.pending_action = PendingAction::OpenQuery(query);
                     } else if id.starts_with("column:") {
@@ -2552,9 +2564,18 @@ impl App {
                                             format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
                                         }
                                     } else {
+                                        let db_type = self.active_db_type();
+                                        let q = if db_type == Some(DatabaseType::MySQL)
+                                            || db_type == Some(DatabaseType::MariaDB)
+                                        {
+                                            '`'
+                                        } else {
+                                            '"'
+                                        };
                                         format!(
-                                            "SELECT * FROM \"{}\" LIMIT 1000 OFFSET 0;\n",
-                                            short
+                                            "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
+                                            q = q,
+                                            short = short
                                         )
                                     };
                                     self.pending_action = PendingAction::OpenQuery(query);

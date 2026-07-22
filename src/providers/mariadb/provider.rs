@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use rust_decimal::Decimal;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::{Column, Executor, Row, TypeInfo};
 
@@ -21,6 +22,27 @@ impl MariadbProvider {
     }
 }
 
+fn col_str(row: &MySqlRow, col: &str) -> String {
+    row.try_get::<String, _>(col)
+        .or_else(|_| {
+            row.try_get::<Vec<u8>, _>(col)
+                .map(|b| String::from_utf8_lossy(&b).to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn col_opt_str(row: &MySqlRow, col: &str) -> Option<String> {
+    row.try_get::<Option<String>, _>(col)
+        .ok()
+        .flatten()
+        .or_else(|| {
+            row.try_get::<Option<Vec<u8>>, _>(col)
+                .ok()
+                .flatten()
+                .map(|b| String::from_utf8_lossy(&b).to_string())
+        })
+}
+
 fn value_from_row(row: &MySqlRow, idx: usize) -> Value {
     row.try_get::<bool, _>(idx)
         .map(Value::Bool)
@@ -31,6 +53,10 @@ fn value_from_row(row: &MySqlRow, idx: usize) -> Value {
         .or_else(|_| row.try_get::<u64, _>(idx).map(|v| Value::Integer(v as i64)))
         .or_else(|_| row.try_get::<f32, _>(idx).map(|v| Value::Float(v as f64)))
         .or_else(|_| row.try_get::<f64, _>(idx).map(Value::Float))
+        .or_else(|_| {
+            row.try_get::<Decimal, _>(idx)
+                .map(|d| Value::Text(d.to_string()))
+        })
         .or_else(|_| {
             row.try_get::<chrono::NaiveDate, _>(idx)
                 .map(|d| Value::Text(d.format("%Y-%m-%d").to_string()))
@@ -48,7 +74,10 @@ fn value_from_row(row: &MySqlRow, idx: usize) -> Value {
             row.try_get::<serde_json::Value, _>(idx)
                 .map(|v| Value::Json(v.to_string()))
         })
-        .or_else(|_| row.try_get::<Vec<u8>, _>(idx).map(Value::Blob))
+        .or_else(|_| {
+            row.try_get::<Vec<u8>, _>(idx)
+                .map(|b| Value::Text(String::from_utf8_lossy(&b).to_string()))
+        })
         .unwrap_or(Value::Null)
 }
 
@@ -201,7 +230,7 @@ impl DatabaseProvider for MariadbProvider {
         .fetch_all(pool)
         .await?;
 
-        let databases: Vec<String> = rows.iter().map(|r| r.get("db")).collect();
+        let databases: Vec<String> = rows.iter().map(|r| col_str(&r, "db")).collect();
         Ok(databases)
     }
 
@@ -224,8 +253,8 @@ impl DatabaseProvider for MariadbProvider {
         let tables = rows
             .iter()
             .map(|r| {
-                let name: String = r.get("name");
-                let table_type: String = r.get("table_type");
+                let name = col_str(&r, "name");
+                let table_type = col_str(&r, "table_type");
                 TableInfo {
                     name,
                     schema: schema.to_string(),
@@ -273,12 +302,12 @@ impl DatabaseProvider for MariadbProvider {
             .iter()
             .map(|r| {
                 let ordinal: u64 = r.get("ordinal");
-                let name: String = r.get("name");
-                let type_name: String = r.get("type_name");
-                let nullable_str: String = r.get("is_nullable");
+                let name = col_str(&r, "name");
+                let type_name = col_str(&r, "type_name");
+                let nullable_str = col_str(&r, "is_nullable");
                 let is_pk: bool = r.get("is_pk");
                 let is_fk: bool = r.get("is_fk");
-                let default_value: Option<String> = r.get("default_value");
+                let default_value = col_opt_str(&r, "default_value");
                 let is_auto_inc: bool = r.get("is_auto_inc");
                 ColumnInfo {
                     name,
@@ -315,8 +344,8 @@ impl DatabaseProvider for MariadbProvider {
         let mut index_map: std::collections::BTreeMap<String, (bool, Vec<String>, bool)> =
             std::collections::BTreeMap::new();
         for r in &rows {
-            let idx_name: String = r.get("index_name");
-            let col_name: String = r.get("column_name");
+            let idx_name = col_str(&r, "index_name");
+            let col_name = col_str(&r, "column_name");
             let non_unique: bool = r.get("non_unique");
             let is_primary: bool = r.get("is_primary");
 
@@ -353,8 +382,8 @@ impl DatabaseProvider for MariadbProvider {
         let views = rows
             .iter()
             .map(|r| {
-                let name: String = r.get("name");
-                let definition: Option<String> = r.get("definition");
+                let name = col_str(&r, "name");
+                let definition = col_opt_str(&r, "definition");
                 ViewInfo {
                     name,
                     definition: definition.unwrap_or_default(),
@@ -381,7 +410,7 @@ impl DatabaseProvider for MariadbProvider {
                 let sequences = r
                     .iter()
                     .map(|r| {
-                        let name: String = r.get("name");
+                let name = col_str(&r, "name");
                         SequenceInfo {
                             name,
                             schema: schema.to_string(),
@@ -418,12 +447,12 @@ impl DatabaseProvider for MariadbProvider {
         let triggers = rows
             .iter()
             .map(|r| {
-                let name: String = r.get("name");
-                let table: String = r.get("table_name");
-                let event: String = r.get("event");
-                let timing: String = r.get("timing");
-                let orientation: String = r.get("orientation");
-                let definition: String = r.get("definition");
+                let name = col_str(&r, "name");
+                let table = col_str(&r, "table_name");
+                let event = col_str(&r, "event");
+                let timing = col_str(&r, "timing");
+                let orientation = col_str(&r, "orientation");
+                let definition = col_str(&r, "definition");
                 TriggerInfo {
                     name,
                     table,
@@ -454,10 +483,10 @@ impl DatabaseProvider for MariadbProvider {
         let functions = rows
             .iter()
             .map(|r| {
-                let name: String = r.get("name");
-                let return_type: Option<String> = r.get("return_type");
-                let definition: Option<String> = r.get("definition");
-                let language: String = r.get("language");
+                let name = col_str(&r, "name");
+                let return_type = col_opt_str(&r, "return_type");
+                let definition = col_opt_str(&r, "definition");
+                let language = col_str(&r, "language");
                 FunctionInfo {
                     name,
                     schema: schema.to_string(),
@@ -488,7 +517,7 @@ impl DatabaseProvider for MariadbProvider {
         let procedures = rows
             .iter()
             .map(|r| {
-                let name: String = r.get("name");
+                        let name = col_str(&r, "name");
                 ProcedureInfo {
                     name,
                     params: Vec::new(),
@@ -518,7 +547,7 @@ impl DatabaseProvider for MariadbProvider {
         let types = rows
             .iter()
             .map(|r| {
-                let type_name: String = r.get("type_name");
+                let type_name = col_str(&r, "type_name");
                 let kind = if type_name.starts_with("enum") {
                     "enum"
                 } else {
@@ -576,7 +605,7 @@ impl DatabaseProvider for MariadbProvider {
         let version_row = sqlx::query("SELECT VERSION() AS version")
             .fetch_one(pool)
             .await?;
-        let version: String = version_row.get("version");
+        let version = col_str(&version_row, "version");
 
         Ok(ServerInfo {
             version,

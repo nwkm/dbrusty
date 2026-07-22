@@ -6,7 +6,7 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 
 ## Status
 
-**Current milestone: M12/30 — Vi-mode Query Editing.** PostgreSQL, SQLite, and MongoDB are fully supported. MySQL and MariaDB providers are implemented but not integrated into the UI. SQL Server and Redis providers are defined but not yet implemented.
+**Current milestone: M14/29 — MariaDB provider fully implemented.** PostgreSQL, SQLite, MongoDB, MySQL, and MariaDB are all fully supported. SQL Server and Redis providers are defined but not yet implemented.
 
 ## Features
 
@@ -25,8 +25,8 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 | PostgreSQL | Full support (tables, columns, indexes, views, sequences, triggers, functions, procedures, extensions, custom types, transactions, server info, chrono types) |
 | SQLite | Full support (tables, columns, indexes, views, transactions, server info) |
 | MongoDB | Full support (connect/ping, CRUD — insert/find/update/delete, aggregate, count, distinct, collStats, explain, collection/index metadata, explorer tree integration, JSON document viewer with inline editing, flat document list tree view) |
-| MySQL | Not yet implemented |
-| MariaDB | Not yet implemented |
+| MySQL | Full support (connect/ping, metadata queries, CRUD, transactions, server info) |
+| MariaDB | Full support (connect/ping, metadata queries, CRUD, transactions, server info, sequences, custom types) |
 | SQL Server | Not yet implemented |
 | Redis | Not yet implemented |
 
@@ -68,8 +68,8 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 
 ### MongoDB Document Viewer
 - Flat document list with expandable/collapsible nested fields and arrays
-- Expand all (O) / collapse all (O) per document
-- Arrow-key navigation (j/k in 3-line steps, Ctrl+U/D for page up/down)
+- Expand all (o) / collapse all (O) per document
+- Arrow-key navigation (j/k in 3-line steps)
 - Inline value editing via Enter on any scalar field
 - Type badges on every field
 - Copy value to clipboard (Y)
@@ -90,12 +90,12 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 | 2 | Connections | ✓ |
 | 3 | Database Explorer | ✓ |
 | 4 | Query Editor | ✓ |
-| 5 | Query History | Placeholder |
-| 6 | Favorites | Placeholder |
-| 7 | Schema Browser | Placeholder |
+| 5 | Query History | ✓ |
+| 6 | Favorites | ✓ |
+| 7 | Schema Browser | ✓ |
 | 8 | Logs | ✓ |
 | 9 | Settings | Placeholder |
-| 0 | Help | ✓ |
+| `?` | Help | ✓ |
 | - | About | Placeholder |
 
 ## Quick Start
@@ -116,7 +116,7 @@ cargo run --release
 
 | Key | Action |
 |-----|--------|
-| `1`–`0` | Switch pages |
+| `1`–`8` | Switch pages |
 | `q` | Quit |
 | `?` | Help |
 | `Tab` | Cycle focus forward |
@@ -148,7 +148,7 @@ Searches across: Explorer tree items, table/column metadata, query editor lines,
 | `h` / `Left` | Collapse / Go to parent |
 | `g` | Go to first |
 | `G` | Go to last |
-| Double-click | Expand node / Load table columns / Run SELECT query on table |
+| `Enter` / Double-click | Expand node / Load table columns / Run SELECT query on table |
 
 ### Query Editor — Vi Mode
 
@@ -193,11 +193,12 @@ Cursor indicates current mode: block `■` in NORMAL, vertical bar `|` in INSERT
 
 | Key | Action |
 |-----|--------|
-| `Right` | Next column |
-| `Left` | Previous column |
+| `Right` / `Left` | Next / previous column |
 | `Up` / `Down` | Navigate rows |
+| `PageUp` / `PageDown` | Page up / down |
+| `Home` / `End` | First / last row |
 | `Enter` | Edit selected cell |
-| `Y` | Copy cell value |
+| `Y` / `y` | Copy cell value |
 | `Esc` | Clear selection / Focus editor |
 | `Ctrl+R` | Run query |
 | `Ctrl+E` | Edit query text |
@@ -224,17 +225,16 @@ Cursor indicates current mode: block `■` in NORMAL, vertical bar `|` in INSERT
 
 | Key | Action |
 |-----|--------|
-| `j` / `Down` | Scroll down (3 lines) |
-| `k` / `Up` | Scroll up (3 lines) |
+| `j` / `Down` | Scroll down |
+| `k` / `Up` | Scroll up |
 | `l` | Expand nested field |
 | `h` | Collapse / Go to parent |
 | `Enter` | Edit scalar value |
 | `g` | Go to first line |
 | `G` | Go to last line |
-| `Y` | Copy value |
-| `O` | Expand all fields in current document |
-| `o` | Collapse all fields in current document |
-| `Ctrl+U` / `Ctrl+D` | Page up / down |
+| `Y` / `y` | Copy value |
+| `o` | Expand all fields in current document |
+| `O` | Collapse all fields in current document |
 | `Esc` | Clear selection / Focus editor |
 
 ### Connections Page
@@ -281,7 +281,7 @@ src/
   events/       — AppEvent enum (reserved for future event system)
   logging/      — Tracing initialization
   models/       — Connection config, data models
-  providers/    — Database driver implementations (mongodb/, postgres/, sqlite/)
+  providers/    — Database driver implementations (postgres/, sqlite/, mysql/, mariadb/, mongodb/)
   storage/      — Connection persistence, OS keychain
   ui/           — Layout, pages (dashboard, connections, explorer, query_editor, ...), sidebar, search
   widgets/      — Reusable UI components (input field, tree widget, mongo doc list)
@@ -299,7 +299,7 @@ Dbrusty uses a clean architecture with async Tokio runtime:
 ├──────────────────────────────────────────────────────────┤
 │  DatabaseProvider Trait (abstract SQL/NOSQL interface)    │
 ├──────────────────────────────────────────────────────────┤
-│  PostgresProvider │ SqliteProvider │ MongoProvider │ ...  │
+│  PostgresProvider │ SqliteProvider │ MysqlProvider │ MariadbProvider │ MongoProvider │ ...  │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -347,25 +347,24 @@ cargo fmt --check
 | M9 | PostgreSQL provider | Connect/ping, metadata (tables, columns, indexes, views, sequences, triggers, functions, procedures, extensions, custom types), server info, transactions, chrono type support | ✓ |
 | M10 | MongoDB provider | Connect/ping, CRUD operations (insertOne/Many, updateOne/Many, deleteOne/Many, find, aggregate, count, distinct), collection/column/index metadata, explorer tree integration, JSON document viewer | ✓ |
 | M11 | Global search | Fuzzy-find across Explorer tree, table/column metadata, query text, result cells, with highlighted keywords, source-priority sorting, keyboard navigation (Ctrl+N/P) | ✓ |
-| M11 | Global search | Fuzzy-find across Explorer tree, table/column metadata, query text, result cells, with highlighted keywords, source-priority sorting, keyboard navigation (Ctrl+N/P) | ✓ |
 | M12 | Vi-mode query editing | NORMAL/INSERT modal editing, word/line navigation, word deletion, undo/redo stacks, clipboard copy, Tab focus cycling, cursor style per mode, click-to-position, docker-compose dev databases | ✓ |
-| M13 | MySQL provider | Connect/ping, metadata queries, CRUD, transactions | ◐ |
-| M14 | MariaDB provider | Connect/ping, metadata queries, CRUD, transactions | |
+| M13 | MySQL provider | Connect/ping, metadata queries (tables, columns, indexes, views, triggers, functions, procedures), CRUD, transactions, cancel query, server info | ✓ |
+| M14 | MariaDB provider | Connect/ping, metadata queries (tables, columns, indexes, views, triggers, functions, procedures, sequences, custom types), CRUD, transactions, cancel query, server info | ✓ |
 | M15 | SQL Server provider | Connect/ping, metadata queries, CRUD, transactions | |
 | M16 | Redis provider | Key browser, TTL, streams, hashes, sets, lists, sorted sets, pub/sub | |
-| M16 | Schema management | CREATE/ALTER/DROP/RENAME tables, generate DDL, reverse engineer schema, schema diff | |
-| M17 | Import / Export | CSV, JSON, SQL, Excel, Parquet, XML, YAML, compressed export | |
-| M18 | Query history | History log, pinned queries, folders, tags, search, favorite, import/export | |
-| M19 | Bookmarks & favorites | Bookmark rows, tables, queries, connections, schemas | |
-| M20 | Themes | Dark theme (current), light theme, custom TOML themes, configurable colors | |
-| M21 | Configurable keybindings | User-defined key mappings in TOML, keybinding presets | |
-| M22 | Security | SSH tunnel, SSL/TLS, certificate management, read-only mode | |
-| M23 | Performance | Virtual scrolling, infinite scroll, dataset virtualization, lazy metadata loading, caching, incremental rendering | |
-| M24 | Plugin system | Database drivers, exporters, themes, editor extensions, macros, custom panels | |
-| M25 | Testing & CI/CD | Unit tests on all modules, integration tests per provider (PostgreSQL, MongoDB), snapshot UI tests, performance benchmarks, cross-platform CI | |
-| M26 | Packaging | AppImage, deb, rpm (Linux), DMG, Homebrew (macOS), MSI, portable EXE (Windows) | |
-| M27 | Documentation | Architecture docs, developer guide, contribution guide, user guide, keybinding reference, plugin guide, API docs | |
-| M28+ | Stable release | Polish, edge-case hardening, accessibility, public beta, v1.0 | |
+| M17 | Schema management | CREATE/ALTER/DROP/RENAME tables, generate DDL, reverse engineer schema, schema diff | |
+| M18 | Import / Export | CSV, JSON, SQL, Excel, Parquet, XML, YAML, compressed export | |
+| M19 | Query history | History log, pinned queries, folders, tags, search, favorite, import/export | |
+| M20 | Bookmarks & favorites | Bookmark rows, tables, queries, connections, schemas | |
+| M21 | Themes | Dark theme (current), light theme, custom TOML themes, configurable colors | |
+| M22 | Configurable keybindings | User-defined key mappings in TOML, keybinding presets | |
+| M23 | Security | SSH tunnel, SSL/TLS, certificate management, read-only mode | |
+| M24 | Performance | Virtual scrolling, infinite scroll, dataset virtualization, lazy metadata loading, caching, incremental rendering | |
+| M25 | Plugin system | Database drivers, exporters, themes, editor extensions, macros, custom panels | |
+| M26 | Testing & CI/CD | Unit tests on all modules, integration tests per provider (PostgreSQL, MongoDB), snapshot UI tests, performance benchmarks, cross-platform CI | |
+| M27 | Packaging | AppImage, deb, rpm (Linux), DMG, Homebrew (macOS), MSI, portable EXE (Windows) | |
+| M28 | Documentation | Architecture docs, developer guide, contribution guide, user guide, keybinding reference, plugin guide, API docs | |
+| M29+ | Stable release | Polish, edge-case hardening, accessibility, public beta, v1.0 | |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed per-release notes.
 

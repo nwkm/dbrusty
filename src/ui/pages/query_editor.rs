@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, CellEditFocus, CellEditMode, Focus, QueryEditorFocus};
+use crate::app::{App, CellEditFocus, CellEditMode, Focus, InputMode, QueryEditorFocus};
 use crate::widgets::mongo_doc_list::render_mongo_doc_list;
 
 fn render_cell_edit_popup(frame: &mut Frame, area: Rect, app: &App) {
@@ -101,7 +101,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         Color::White
     };
     let title = if app.editing_query {
-        " Query Editor [EDITING] "
+        if app.input_mode == InputMode::Insert {
+            " Query Editor [INSERT] "
+        } else {
+            " Query Editor [NORMAL] "
+        }
     } else {
         " Query Editor "
     };

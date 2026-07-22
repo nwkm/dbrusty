@@ -234,7 +234,7 @@ fn build_hints(app: &App) -> String {
         ""
     };
     format!(
-        " n:New  e:Edit  d:Delete  Enter:Connect{}  j/k:Navigate  q:Back ",
+        " n:New  e:Edit  d:Delete  Enter:Connect{}  j/k:Navigate ",
         disconnect_hint
     )
 }
@@ -312,7 +312,7 @@ mod tests {
         let hints = build_hints(&app);
         assert!(!hints.contains("Disconnect"));
         assert!(hints.contains("n:New"));
-        assert!(hints.contains("q:Back"));
+        assert!(hints.contains("n:New"));
     }
 
     #[test]

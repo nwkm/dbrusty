@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,8 +23,8 @@ use crate::config::AppConfig;
 use crate::database::metadata::MetadataCache;
 use crate::database::pool::ConnectionPool;
 use crate::database::provider::DatabaseProvider;
-use crate::database::result::Value;
-use crate::database::types::ColumnInfo;
+use crate::database::result::{QueryResult, Value};
+use crate::database::types::{ColumnInfo, TableInfo, ViewInfo};
 use crate::models::connection::{ConnectionConfig, DatabaseType};
 use crate::providers::mariadb::MariadbProvider;
 use crate::providers::mongodb::MongoProvider;
@@ -35,6 +36,32 @@ use crate::ui;
 use crate::widgets::input::InputField;
 use crate::widgets::mongo_doc_list::MongoDocListState;
 use crate::widgets::tree::TreeState;
+
+enum BackgroundEvent {
+    Connected {
+        id: Uuid,
+        provider: Box<dyn DatabaseProvider>,
+        conn_name: String,
+        databases: Vec<String>,
+        schemas_data: Vec<(String, Vec<String>)>,
+        tables_data: Vec<(String, Vec<TableInfo>)>,
+        views_data: Vec<(String, Vec<ViewInfo>)>,
+    },
+    ConnectFailed {
+        conn_name: String,
+        error: String,
+    },
+    QueryDone {
+        provider_id: Uuid,
+        provider: Box<dyn DatabaseProvider>,
+        result: QueryResult,
+    },
+    QueryFailed {
+        provider_id: Uuid,
+        provider: Box<dyn DatabaseProvider>,
+        error: String,
+    },
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +323,8 @@ pub struct App {
     pub redo_stack: Vec<String>,
     pub pending_j: bool,
     pub pending_d: bool,
+    pub is_busy: bool,
+    background_rx: mpsc::UnboundedReceiver<BackgroundEvent>,
 }
 
 fn mongo_value_strip_quotes(s: &str) -> &str {
@@ -454,6 +483,11 @@ impl App {
             redo_stack: Vec::new(),
             pending_j: false,
             pending_d: false,
+            is_busy: false,
+            background_rx: {
+                let (_tx, rx) = mpsc::unbounded_channel();
+                rx
+            },
         };
         app.set_status("Ready");
         app
@@ -475,6 +509,7 @@ impl App {
         while !self.should_quit {
             terminal.draw(|frame| ui::render(frame, self))?;
 
+            self.check_background_results();
             self.process_pending_actions().await;
 
             if event::poll(Duration::from_millis(100))? {
@@ -490,11 +525,137 @@ impl App {
         Ok(())
     }
 
+    fn spawn_connect(&mut self, conn: ConnectionConfig) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.background_rx = rx;
+        let conn_name = conn.name.clone();
+
+        let mut provider: Box<dyn DatabaseProvider> = match conn.db_type {
+            DatabaseType::Postgres => Box::new(PostgresProvider::new()),
+            DatabaseType::SQLite => Box::new(SqliteProvider::new()),
+            DatabaseType::MySQL => Box::new(MysqlProvider::new()),
+            DatabaseType::MariaDB => Box::new(MariadbProvider::new()),
+            DatabaseType::MongoDB => Box::new(MongoProvider::new()),
+            _ => {
+                self.set_status(format!(
+                    "\"{}\" is {} (not yet supported).",
+                    conn.name,
+                    conn.db_type.display_name()
+                ));
+                return;
+            }
+        };
+
+        self.is_busy = true;
+        self.set_status(format!("Connecting to \"{}\"...", conn_name));
+
+        tokio::spawn(async move {
+            let connect_result =
+                tokio::time::timeout(Duration::from_secs(10), provider.connect(&conn)).await;
+
+            match connect_result {
+                Ok(Ok(())) => {
+                    let databases = provider.get_databases().await.unwrap_or_default();
+                    let mut tables_data = Vec::new();
+                    let mut views_data = Vec::new();
+                    let mut schemas_data: Vec<(String, Vec<String>)> = Vec::new();
+
+                    for db in &databases {
+                        let mut schemas = provider.get_schemas().await.unwrap_or_default();
+                        if schemas.is_empty() {
+                            schemas = vec![db.clone()];
+                        }
+                        schemas_data.push((db.clone(), schemas.clone()));
+
+                        for schema in &schemas {
+                            let schema_key = format!("{}.{}", db, schema);
+                            if let Ok(tables) = provider.get_tables(schema).await {
+                                tables_data.push((schema_key.clone(), tables));
+                            }
+                            if let Ok(views) = provider.get_views(schema).await {
+                                views_data.push((schema_key.clone(), views));
+                            }
+                        }
+                    }
+
+                    let _ = tx.send(BackgroundEvent::Connected {
+                        id: conn.id,
+                        provider,
+                        conn_name,
+                        databases,
+                        schemas_data,
+                        tables_data,
+                        views_data,
+                    });
+                }
+                Ok(Err(e)) => {
+                    let _ = tx.send(BackgroundEvent::ConnectFailed {
+                        conn_name,
+                        error: e.to_string(),
+                    });
+                }
+                Err(_) => {
+                    let _ = tx.send(BackgroundEvent::ConnectFailed {
+                        conn_name,
+                        error: "Connection timed out after 20 seconds".to_string(),
+                    });
+                }
+            }
+        });
+    }
+
+    fn spawn_query(&mut self, sql: String) {
+        let active_id = match self.pool.active_id {
+            Some(id) => id,
+            None => {
+                self.set_status("No active connection");
+                return;
+            }
+        };
+        let provider = match self.pool.take(active_id) {
+            Some(p) => p,
+            None => {
+                self.set_status("Provider not available");
+                return;
+            }
+        };
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.background_rx = rx;
+
+        self.is_busy = true;
+        self.set_status("Running query...");
+
+        tokio::spawn(async move {
+            match provider.execute_query(&sql).await {
+                Ok(result) => {
+                    let _ = tx.send(BackgroundEvent::QueryDone {
+                        provider_id: active_id,
+                        provider,
+                        result,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(BackgroundEvent::QueryFailed {
+                        provider_id: active_id,
+                        provider,
+                        error: e.to_string(),
+                    });
+                }
+            }
+        });
+    }
+
     async fn process_pending_actions(&mut self) {
         let action = std::mem::replace(&mut self.pending_action, PendingAction::None);
         match action {
             PendingAction::Connect(conn) => {
-                self.connect_to(conn).await;
+                if self.is_busy {
+                    self.set_status("Already busy, please wait...");
+                    self.pending_action = PendingAction::Connect(conn);
+                    return;
+                }
+                self.spawn_connect(conn);
             }
             PendingAction::LoadColumns { table } => {
                 self.load_columns(&table).await;
@@ -504,10 +665,20 @@ impl App {
                 self.query_editor.set_value(&query);
                 self.current_page = Page::QueryEditor;
                 self.query_editor_focus = QueryEditorFocus::Results;
-                self.run_query(&query).await;
+                if self.is_busy {
+                    self.set_status("Already busy, please wait...");
+                    self.pending_action = PendingAction::OpenQuery(query);
+                    return;
+                }
+                self.spawn_query(query);
             }
             PendingAction::RunQuery(sql) => {
-                self.run_query(&sql).await;
+                if self.is_busy {
+                    self.set_status("Already busy, please wait...");
+                    self.pending_action = PendingAction::RunQuery(sql);
+                    return;
+                }
+                self.spawn_query(sql);
             }
             PendingAction::Disconnect(id) => {
                 if let Some(provider) = self.pool.get_mut(id) {
@@ -532,6 +703,201 @@ impl App {
         }
     }
 
+    fn check_background_results(&mut self) {
+        loop {
+            let event = match self.background_rx.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.is_busy = false;
+                    break;
+                }
+            };
+
+            self.is_busy = false;
+
+            match event {
+                BackgroundEvent::Connected {
+                    id,
+                    provider,
+                    conn_name,
+                    databases,
+                    schemas_data,
+                    tables_data,
+                    views_data,
+                } => {
+                    self.pool.register(id, provider);
+                    self.pool.set_active(id);
+                    self.query_text.clear();
+                    self.query_editor.set_value("");
+
+                    for (schema_key, tables) in &tables_data {
+                        self.metadata_cache
+                            .set_tables(schema_key.clone(), tables.clone());
+                    }
+                    for (schema_key, views) in &views_data {
+                        self.metadata_cache
+                            .set_views(schema_key.clone(), views.clone());
+                    }
+
+                    self.explorer_tree = crate::ui::sidebar::build_initial_tree(
+                        &conn_name,
+                        &databases,
+                        &schemas_data,
+                        &tables_data,
+                        &views_data,
+                    );
+
+                    // Update last_connected and persist
+                    if let Some(saved) = self
+                        .connections
+                        .iter_mut()
+                        .find(|c| c.id == id)
+                    {
+                        saved.last_connected = Some(chrono::Utc::now());
+                        let _ = storage::connections::save_connections(&self.connections);
+                    }
+                    self.current_page = Page::Explorer;
+                    self.focus = Focus::Sidebar;
+                    self.editing_query = false;
+                    self.set_status(format!("Connected to \"{}\"", conn_name));
+                }
+                BackgroundEvent::ConnectFailed { conn_name, error } => {
+                    self.set_status(format!("Failed to connect to \"{}\": {}", conn_name, error));
+                }
+                BackgroundEvent::QueryDone {
+                    provider_id,
+                    provider,
+                    result,
+                    ..
+                } => {
+                    self.pool.give_back(provider_id, provider);
+
+                    let sample_size = 1000.min(result.rows.len());
+                    let col_widths: Vec<usize> = result
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .map(|(ci, col)| {
+                            let header_len = col.name.len();
+                            let max_data = result.rows[..sample_size]
+                                .iter()
+                                .map(|row| {
+                                    row.get(ci).map(|v| v.to_string().len()).unwrap_or(0)
+                                })
+                                .max()
+                                .unwrap_or(0);
+                            header_len.max(max_data)
+                        })
+                        .collect();
+
+                    if result.raw_documents.is_some() {
+                        self.mongo_raw_documents = result.raw_documents.clone();
+                        self.mongo_doc_state = MongoDocListState::new();
+                        self.query_columns.clear();
+                        self.query_data.clear();
+                        self.query_data_typed.clear();
+                        self.query_column_info.clear();
+                        self.query_col_widths.clear();
+                        self.query_results.clear();
+                    } else {
+                        self.mongo_raw_documents = None;
+                        if result.is_select {
+                            self.query_results.clear();
+                            self.query_columns =
+                                result.columns.iter().map(|c| c.name.clone()).collect();
+                            self.query_data = result
+                                .rows
+                                .iter()
+                                .map(|row| row.iter().map(|v| v.to_string()).collect())
+                                .collect();
+                            self.query_data_typed = result.rows.clone();
+                            self.query_column_info = result.columns.clone();
+                            self.query_col_widths = col_widths;
+                        } else {
+                            let mut output = String::new();
+                            output.push_str(&format!("({:?})", result.duration));
+                            output.push('\n');
+                            for (i, col) in result.columns.iter().enumerate() {
+                                if i > 0 {
+                                    output.push_str(" | ");
+                                }
+                                output.push_str(&format!(
+                                    "{:width$}",
+                                    col.name,
+                                    width = col_widths[i]
+                                ));
+                            }
+                            output.push('\n');
+                            for (i, w) in col_widths.iter().enumerate() {
+                                if i > 0 {
+                                    output.push_str("-+-");
+                                }
+                                for _ in 0..*w {
+                                    output.push('-');
+                                }
+                            }
+                            output.push('\n');
+                            for row in &result.rows {
+                                for (i, val) in row.iter().enumerate() {
+                                    if i > 0 {
+                                        output.push_str(" | ");
+                                    }
+                                    output.push_str(&format!(
+                                        "{:width$}",
+                                        val.to_string(),
+                                        width = col_widths[i]
+                                    ));
+                                }
+                                output.push('\n');
+                            }
+                            output.push_str(&format!(
+                                "{} rows affected",
+                                result.rows_affected
+                            ));
+                            output.push('\n');
+                            self.query_results = output;
+                            self.query_columns.clear();
+                            self.query_data.clear();
+                            self.query_data_typed.clear();
+                            self.query_column_info.clear();
+                            self.query_col_widths.clear();
+                        }
+                    }
+                    self.result_scroll_v = 0;
+                    self.result_scroll_h = 0;
+                    self.inspector_scroll = 0;
+                    self.selected_row = 0;
+                    self.selected_col = 0;
+                    self.cell_edit_mode = CellEditMode::Inactive;
+                    self.set_status(format!(
+                        "Query returned {} rows in {:?}",
+                        result.rows.len(),
+                        result.duration
+                    ));
+                }
+                BackgroundEvent::QueryFailed {
+                    provider_id,
+                    provider,
+                    error,
+                    ..
+                } => {
+                    self.pool.give_back(provider_id, provider);
+                    self.query_results = format!("Error: {}", error);
+                    self.query_columns.clear();
+                    self.query_data.clear();
+                    self.query_data_typed.clear();
+                    self.query_column_info.clear();
+                    self.query_col_widths.clear();
+                    self.mongo_raw_documents = None;
+                    self.cell_edit_mode = CellEditMode::Inactive;
+                    self.set_status(format!("Query failed: {}", error));
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     async fn connect_to(&mut self, conn: ConnectionConfig) {
         let mut provider: Box<dyn DatabaseProvider> = match conn.db_type {
             DatabaseType::Postgres => Box::new(PostgresProvider::new()),
@@ -629,6 +995,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     async fn run_query(&mut self, sql: &str) {
         if self.pool.active_id.is_none() {
             self.set_status("No active connection");

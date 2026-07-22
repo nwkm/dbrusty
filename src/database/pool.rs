@@ -29,6 +29,19 @@ impl ConnectionPool {
         }
     }
 
+    pub fn take(&mut self, id: Uuid) -> Option<Box<dyn DatabaseProvider>> {
+        let provider = self.connections.remove(&id);
+        if self.active_id == Some(id) {
+            self.active_id = None;
+        }
+        provider
+    }
+
+    pub fn give_back(&mut self, id: Uuid, provider: Box<dyn DatabaseProvider>) {
+        self.connections.insert(id, provider);
+        self.active_id = Some(id);
+    }
+
     pub fn get(&self, id: Uuid) -> Option<&dyn DatabaseProvider> {
         if let Some(provider) = self.connections.get(&id) {
             Some(provider.as_ref())

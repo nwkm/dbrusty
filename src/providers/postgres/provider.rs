@@ -139,6 +139,7 @@ impl DatabaseProvider for PostgresProvider {
 
         let pool = PgPoolOptions::new()
             .max_connections(5)
+            .acquire_timeout(std::time::Duration::from_secs(10))
             .connect(&url)
             .await
             .map_err(|e| DatabaseError::Connection(e.to_string()))?;

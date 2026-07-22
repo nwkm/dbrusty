@@ -334,15 +334,35 @@ impl DatabaseProvider for MongoProvider {
             config.username,
         );
 
-        let client = Client::with_uri_str(&uri)
-            .await
-            .map_err(|e| DatabaseError::Connection(e.to_string()))?;
+        let client = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Client::with_uri_str(&uri),
+        )
+        .await
+        .map_err(|_| DatabaseError::Connection("Connection timed out".to_string()))?
+        .map_err(|e| DatabaseError::Connection(e.to_string()))?;
 
         let database_name = if config.database.is_empty() {
             "admin".to_string()
         } else {
             config.database.clone()
         };
+
+        // Verify the connection is real — Client::with_uri_str is lazy
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+                client
+                .database(&database_name)
+                .run_command(bson::doc! { "ping": 1 }),
+        )
+        .await
+        .map_err(|_| DatabaseError::Connection(
+            "Connection timed out — no MongoDB server is reachable".to_string(),
+        ))?
+        .map_err(|e| DatabaseError::Connection(format!(
+            "Server unreachable: {}",
+            e
+        )))?;
 
         self.client = Some(client);
         self.database_name = database_name;

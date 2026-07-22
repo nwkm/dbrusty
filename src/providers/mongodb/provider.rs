@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use bson::{Bson, Document};
-use futures::TryStreamExt;
+use futures_util::TryStreamExt;
 use mongodb::Client;
 
 use crate::database::provider::{DatabaseError, DatabaseProvider, DatabaseResult};

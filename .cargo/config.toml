@@ -1,0 +1,12 @@
+# Linker-level binary size optimizations
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-dead_strip"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-dead_strip"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--gc-sections"]
+
+

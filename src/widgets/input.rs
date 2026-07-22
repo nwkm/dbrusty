@@ -88,6 +88,112 @@ impl InputField {
         }
     }
 
+    pub fn delete_char_before_cursor(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+            self.value.remove(self.cursor_pos);
+        }
+    }
+
+    pub fn line_start(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    pub fn line_end(&mut self) {
+        self.cursor_pos = self.value.len();
+    }
+
+    pub fn word_right(&mut self) {
+        let bytes = self.value.as_bytes();
+        let len = bytes.len();
+        if self.cursor_pos >= len {
+            return;
+        }
+        // skip current word chars
+        let mut i = self.cursor_pos;
+        while i < len && is_word_char(bytes[i]) {
+            i += 1;
+        }
+        // skip separator chars
+        while i < len && !is_word_char(bytes[i]) {
+            i += 1;
+        }
+        self.cursor_pos = i;
+    }
+
+    pub fn word_left(&mut self) {
+        if self.cursor_pos == 0 {
+            return;
+        }
+        let bytes = self.value.as_bytes();
+        // skip separator chars before cursor
+        let mut i = self.cursor_pos.saturating_sub(1);
+        while i > 0 && !is_word_char(bytes[i]) {
+            i -= 1;
+        }
+        // skip word chars
+        while i > 0 && is_word_char(bytes[i]) {
+            i -= 1;
+        }
+        if i == 0 && is_word_char(bytes[0]) {
+            self.cursor_pos = 0;
+        } else {
+            self.cursor_pos = i + 1;
+        }
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        let bytes = self.value.as_bytes();
+        let len = bytes.len();
+        if self.cursor_pos >= len {
+            return;
+        }
+        // skip current word chars
+        let mut end = self.cursor_pos;
+        while end < len && is_word_char(bytes[end]) {
+            end += 1;
+        }
+        // consume trailing whitespace
+        while end < len && bytes[end] == b' ' {
+            end += 1;
+        }
+        self.value.drain(self.cursor_pos..end);
+    }
+
+    pub fn delete_word_backward(&mut self) {
+        if self.cursor_pos == 0 {
+            return;
+        }
+        let bytes = self.value.as_bytes();
+        // skip whitespace before cursor
+        let mut start = self.cursor_pos.saturating_sub(1);
+        while start > 0 && bytes[start] == b' ' {
+            start -= 1;
+        }
+        // skip word chars
+        while start > 0 && is_word_char(bytes[start]) {
+            start -= 1;
+        }
+        if start == 0 && is_word_char(bytes[0]) {
+            self.value.drain(0..self.cursor_pos);
+            self.cursor_pos = 0;
+        } else {
+            let remove_start = start + 1;
+            self.value.drain(remove_start..self.cursor_pos);
+            self.cursor_pos = remove_start;
+        }
+    }
+
+    pub fn set_cursor_to_content_end(&mut self) {
+        let trimmed = self.value.trim_end();
+        self.cursor_pos = trimmed.len();
+    }
+
+    pub fn set_cursor_from_click(&mut self, col: u16, area: Rect) {
+        let rel_x = col.saturating_sub(area.x) as usize;
+        self.cursor_pos = rel_x.min(self.value.len());
+    }
+
     pub fn render_into(&self, frame: &mut Frame, area: Rect) {
         let display = if self.value.is_empty() {
             self.placeholder.as_str()
@@ -134,4 +240,8 @@ impl InputField {
             }
         }
     }
+}
+
+fn is_word_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }

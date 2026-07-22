@@ -1091,20 +1091,42 @@ impl App {
 
     fn mongo_mouse_to_line(&self, mouse_row: u16) -> Option<usize> {
         let combined_h = self.main_rect.height;
+        let results_area_height = combined_h * 75 / 100;
         let results_area_y = self.main_rect.y + combined_h * 25 / 100;
-        let inner_y = results_area_y + 1; // border
+        let inner_y = results_area_y + 1; // top border
+        let inner_height = results_area_height.saturating_sub(2) as usize; // minus borders
         if mouse_row < inner_y {
             return None;
         }
         let relative_row = (mouse_row - inner_y) as usize;
-        let line = self.mongo_doc_state.scroll_offset + relative_row;
+        if relative_row >= inner_height {
+            return None;
+        }
         let docs = self.mongo_raw_documents.as_ref()?;
         let total = self.mongo_doc_state.cached_line_count(docs);
-        if line < total {
-            Some(line)
-        } else {
-            None
+        if total == 0 {
+            return None;
         }
+
+        // Replicate renderer's view_offset logic so mouse hits the correct line
+        let visible = inner_height.min(total);
+        let mut effective_offset = self
+            .mongo_doc_state
+            .scroll_offset
+            .min(total.saturating_sub(visible));
+        let sel = self
+            .mongo_doc_state
+            .selected_line
+            .min(total.saturating_sub(1));
+        if sel < effective_offset {
+            effective_offset = sel;
+        } else if sel >= effective_offset + visible && sel >= visible {
+            effective_offset = sel.saturating_add(1).saturating_sub(visible);
+        }
+        effective_offset = effective_offset.min(total.saturating_sub(visible));
+
+        let line = effective_offset + relative_row;
+        if line < total { Some(line) } else { None }
     }
 
     fn copy_selected_cell(&mut self) {
@@ -2062,6 +2084,13 @@ impl App {
                         if self.is_mongo_query() {
                             if let Some(line) = self.mongo_mouse_to_line(row) {
                                 self.mongo_doc_state.selected_line = line;
+                                if let Some(docs) = self.mongo_raw_documents.as_ref() {
+                                    let total = self.mongo_doc_state.cached_line_count(docs);
+                                    let visible_height = (self.main_rect.height * 75 / 100)
+                                        .saturating_sub(2) as usize;
+                                    self.mongo_doc_state
+                                        .adjust_offset(visible_height, total);
+                                }
                                 if is_double {
                                     // Trigger edit via Enter key event
                                     let docs = match self.mongo_raw_documents {

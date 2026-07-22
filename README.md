@@ -6,7 +6,7 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 
 ## Status
 
-**Current milestone: M11/30 — Global Search & MongoDB Provider.** PostgreSQL, SQLite, and MongoDB are fully supported. MySQL, MariaDB, SQL Server, and Redis providers are defined but not yet implemented (the architecture is ready — implement the trait).
+**Current milestone: M12/30 — Vi-mode Query Editing.** PostgreSQL, SQLite, and MongoDB are fully supported. MySQL and MariaDB providers are implemented but not integrated into the UI. SQL Server and Redis providers are defined but not yet implemented.
 
 ## Features
 
@@ -40,7 +40,10 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 ### Query Editor
 - Split layout: editor (25%) / results (75%)
 - **Table double-click** in Explorer automatically generates and runs `SELECT * FROM "table" LIMIT 1000 OFFSET 0`
-- Text editing with cursor navigation (Home, End, arrows)
+- **Vi-style modal editing** with NORMAL and INSERT modes
+- NORMAL mode: `h`/`l` cursor movement, `w`/`b` word navigation, `dw`/`db` word deletion, `H`/`L` line start/end, `u`/`R` undo/redo, `Y` copy query to clipboard, `x`/`Backspace` char deletion
+- INSERT mode: standard text entry, `Esc`/`jj` to return to NORMAL, `Ctrl+R` to run query
+- Cursor shape changes: block `■` in NORMAL, vertical bar `|` in INSERT
 - Results display with column headers, row highlighting, and scrollable viewport
 - Cell selection with arrow keys / Tab
 - Cell editing via popup dialog (Enter edit, Tab/Enter confirm, Esc cancel)
@@ -146,6 +149,45 @@ Searches across: Explorer tree items, table/column metadata, query editor lines,
 | `g` | Go to first |
 | `G` | Go to last |
 | Double-click | Expand node / Load table columns / Run SELECT query on table |
+
+### Query Editor — Vi Mode
+
+The editor uses modal keybindings. Start editing with `Ctrl+E` or Tab to the editor pane.
+
+#### NORMAL mode (default)
+
+| Key | Action |
+|-----|--------|
+| `i` | Enter INSERT mode |
+| `h` / `Left` | Move cursor left |
+| `l` / `Right` | Move cursor right |
+| `H` | Move to start of line |
+| `L` | Move to end of line |
+| `w` | Move forward by word |
+| `b` | Move backward by word |
+| `dw` | Delete word forward (consumes trailing space) |
+| `db` | Delete word backward (consumes trailing space) |
+| `x` | Delete char at cursor |
+| `Backspace` | Delete char before cursor |
+| `u` | Undo |
+| `R` | Redo |
+| `Y` | Copy query to clipboard |
+| `Ctrl+R` | Run query |
+| `Esc` | No-op |
+| Tab / Shift+Tab | Cycle focus to other panes |
+| Click | Move cursor to clicked position |
+| Double-click | Enter INSERT mode at cursor position |
+
+#### INSERT mode
+
+| Key | Action |
+|-----|--------|
+| `Esc` | Return to NORMAL mode |
+| `jj` | Return to NORMAL mode |
+| `Ctrl+R` | Run query and return to NORMAL |
+| Click | Move cursor to clicked position |
+
+Cursor indicates current mode: block `■` in NORMAL, vertical bar `|` in INSERT.
 
 ### Query Editor — Results
 
@@ -305,10 +347,12 @@ cargo fmt --check
 | M9 | PostgreSQL provider | Connect/ping, metadata (tables, columns, indexes, views, sequences, triggers, functions, procedures, extensions, custom types), server info, transactions, chrono type support | ✓ |
 | M10 | MongoDB provider | Connect/ping, CRUD operations (insertOne/Many, updateOne/Many, deleteOne/Many, find, aggregate, count, distinct), collection/column/index metadata, explorer tree integration, JSON document viewer | ✓ |
 | M11 | Global search | Fuzzy-find across Explorer tree, table/column metadata, query text, result cells, with highlighted keywords, source-priority sorting, keyboard navigation (Ctrl+N/P) | ✓ |
-| M12 | MySQL provider | Connect/ping, metadata queries, CRUD, transactions | ◐ |
-| M13 | MariaDB provider | Connect/ping, metadata queries, CRUD, transactions | |
-| M14 | SQL Server provider | Connect/ping, metadata queries, CRUD, transactions | |
-| M15 | Redis provider | Key browser, TTL, streams, hashes, sets, lists, sorted sets, pub/sub | |
+| M11 | Global search | Fuzzy-find across Explorer tree, table/column metadata, query text, result cells, with highlighted keywords, source-priority sorting, keyboard navigation (Ctrl+N/P) | ✓ |
+| M12 | Vi-mode query editing | NORMAL/INSERT modal editing, word/line navigation, word deletion, undo/redo stacks, clipboard copy, Tab focus cycling, cursor style per mode, click-to-position, docker-compose dev databases | ✓ |
+| M13 | MySQL provider | Connect/ping, metadata queries, CRUD, transactions | ◐ |
+| M14 | MariaDB provider | Connect/ping, metadata queries, CRUD, transactions | |
+| M15 | SQL Server provider | Connect/ping, metadata queries, CRUD, transactions | |
+| M16 | Redis provider | Key browser, TTL, streams, hashes, sets, lists, sorted sets, pub/sub | |
 | M16 | Schema management | CREATE/ALTER/DROP/RENAME tables, generate DDL, reverse engineer schema, schema diff | |
 | M17 | Import / Export | CSV, JSON, SQL, Excel, Parquet, XML, YAML, compressed export | |
 | M18 | Query history | History log, pinned queries, folders, tags, search, favorite, import/export | |

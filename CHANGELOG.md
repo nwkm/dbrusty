@@ -7,19 +7,30 @@ All notable changes to Dbrusty are documented here.
 ## [Unreleased]
 
 ### Added
-- Inspector pane: toggleable (Alt+H) detail view for the selected row's columns with type badges, inline editing (click value, Enter save, Esc cancel, Alt+Z undo), horizontal scroll for long values, vertical scroll (j/k/g/G)
-- Double-click table name in Explorer tree to execute `SELECT * FROM "table" LIMIT 1000 OFFSET 0` and display results in Query Editor
-- Chrono date/time type support in PostgreSQL provider (NaiveDate, NaiveDateTime, DateTime<Utc>, NaiveTime decode to formatted text instead of null)
-- Row highlighting (yellow background, bold black text) on selected row in results view
-- Dynamic key hints in status bar that update based on focus and edit mode
-- Inspector focus cycling (Tab through Sidebar/Main/Inspector); Inspector hidden from cycle when toggled off
-- Connections pane: show `Alt-Enter:Disconnect` keybinding hint when the selected connection is currently connected
+- **Vi-style modal editing** in Query Editor with NORMAL/INSERT modes
+  - NORMAL mode: `h`/`l` cursor movement, `w`/`b` word navigation, `H`/`L` line start/end, `dw`/`db` word deletion, `x`/`Backspace` char deletion, `u`/`R` undo/redo, `Y` copy query to clipboard
+  - INSERT mode: text entry, `Esc`/`jj` to return to NORMAL, `Ctrl+R` to run query
+  - Undo/redo stacks: per-INSERT-session snapshots, per-NORMAL-edit snapshots
+  - Cursor style changes: block `■` in NORMAL, vertical bar `|` in INSERT
+  - Click-to-position cursor in both NORMAL and INSERT modes
+  - Double-click enters INSERT mode at cursor position
+  - Tab/Shift+Tab cycle focus across panes from any mode (resets to NORMAL on editor re-entry)
+  - Focus on Query Editor auto-enters NORMAL mode with cursor at content end (trailing spaces ignored)
+- **Docker Compose** dev database setup (`docker-compose.yml`)
+  - PostgreSQL 16, MySQL 8, MariaDB 11, MongoDB 7, Redis 7
+  - Named volumes for persistent storage, health checks on all services
+- **Seed script** (`scripts/seed.sh`) to build and run all seed binaries against Docker databases
+  - Per-database skip flags (`--skip-postgres`, `--skip-mysql`, `--skip-mariadb`, `--skip-mongodb`)
+- Connection success now switches to Explorer page with sidebar focus
+
+### Changed
+- `Ctrl+E` to enter editing mode starts in NORMAL mode (not INSERT)
+- `Ctrl+R` to run query stays in editing mode (NORMAL) instead of exiting
+- Query editor block title shows `[NORMAL]` or `[INSERT]` based on current mode
+- Focus dispatch now routes to editor handler only when the editor pane is focused
 
 ### Fixed
-- Missing `chrono` feature flag on sqlx dependency (PostgreSQL date/time columns returned null)
-- Backspace key losing focus in Inspector edit mode
-- Off-by-one cursor rendering in Inspector edit field
-- Capital letters not inputtable in Inspector edit mode (SHIFT modifier now accepted)
+- Keybindings on non-editor panes (Sidebar, Results, Inspector) work correctly when editor is active
 
 ---
 

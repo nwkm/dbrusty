@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use uuid::Uuid;
@@ -291,6 +292,10 @@ pub struct App {
     pub mongo_raw_documents: Option<Vec<bson::Document>>,
     pub mongo_doc_state: MongoDocListState,
     pub mongo_edit_path: Option<String>,
+    pub undo_stack: Vec<String>,
+    pub redo_stack: Vec<String>,
+    pub pending_j: bool,
+    pub pending_d: bool,
 }
 
 fn mongo_value_strip_quotes(s: &str) -> &str {
@@ -445,6 +450,10 @@ impl App {
             mongo_raw_documents: None,
             mongo_doc_state: MongoDocListState::new(),
             mongo_edit_path: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            pending_j: false,
+            pending_d: false,
         };
         app.set_status("Ready");
         app
@@ -595,6 +604,9 @@ impl App {
                     }
                     let _ = storage::connections::save_connections(&self.connections);
                 }
+                self.current_page = Page::Explorer;
+                self.focus = Focus::Sidebar;
+                self.editing_query = false;
                 self.set_status(format!("Connected to \"{}\"", conn.name));
             }
             Err(e) => {
@@ -742,23 +754,170 @@ impl App {
         }
     }
 
+    fn push_undo_snapshot(&mut self) {
+        self.undo_stack.push(self.query_editor.value.clone());
+        self.redo_stack.clear();
+    }
+
+    fn undo(&mut self) {
+        if let Some(snapshot) = self.undo_stack.pop() {
+            self.redo_stack.push(self.query_editor.value.clone());
+            self.query_editor.value = snapshot;
+            self.query_editor.cursor_pos = self.query_editor.value.len();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(snapshot) = self.redo_stack.pop() {
+            self.undo_stack.push(self.query_editor.value.clone());
+            self.query_editor.value = snapshot;
+            self.query_editor.cursor_pos = self.query_editor.value.len();
+        }
+    }
+
     fn handle_query_edit_key(&mut self, key: &KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                self.editing_query = false;
+            KeyCode::Tab if self.cell_edit_mode == CellEditMode::Inactive => {
+                self.cycle_focus();
+                return;
+            }
+            KeyCode::BackTab if self.cell_edit_mode == CellEditMode::Inactive => {
+                self.cycle_focus_reverse();
+                return;
+            }
+            _ => {}
+        }
+
+        if self.input_mode == InputMode::Insert {
+            match key.code {
+                KeyCode::Esc => {
+                    self.input_mode = InputMode::Normal;
+                    self.pending_j = false;
+                    self.query_text = self.query_editor.value.clone();
+                    self.apply_cursor_style();
+                }
+                KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.input_mode = InputMode::Normal;
+                    self.pending_j = false;
+                    self.query_text = self.query_editor.value.clone();
+                    self.apply_cursor_style();
+                    if !self.query_text.is_empty() {
+                        let sql = self.query_text.clone();
+                        self.pending_action = PendingAction::RunQuery(sql);
+                    }
+                }
+                KeyCode::Char('j') => {
+                    if self.pending_j {
+                        self.query_editor.delete_char_before_cursor();
+                        self.pending_j = false;
+                        self.input_mode = InputMode::Normal;
+                        self.query_text = self.query_editor.value.clone();
+                        self.apply_cursor_style();
+                    } else {
+                        self.query_editor.handle_key(key);
+                        self.pending_j = true;
+                    }
+                }
+                _ => {
+                    if self.pending_j {
+                        self.pending_j = false;
+                    }
+                    self.query_editor.handle_key(key);
+                }
+            }
+            return;
+        }
+
+        // NORMAL mode
+        if self.pending_d {
+            self.pending_d = false;
+            match key.code {
+                KeyCode::Char('w') => {
+                    self.push_undo_snapshot();
+                    self.query_editor.delete_word_forward();
+                    self.query_text = self.query_editor.value.clone();
+                    return;
+                }
+                KeyCode::Char('b') => {
+                    self.push_undo_snapshot();
+                    self.query_editor.delete_word_backward();
+                    self.query_text = self.query_editor.value.clone();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        match key.code {
+            KeyCode::Char('i') => {
+                self.push_undo_snapshot();
+                self.input_mode = InputMode::Insert;
+                self.pending_j = false;
+                self.apply_cursor_style();
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if self.query_editor.cursor_pos > 0 {
+                    self.query_editor.cursor_pos -= 1;
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if self.query_editor.cursor_pos < self.query_editor.value.len() {
+                    self.query_editor.cursor_pos += 1;
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {}
+            KeyCode::Char('k') | KeyCode::Up => {}
+            KeyCode::Char('H') => {
+                self.query_editor.line_start();
+            }
+            KeyCode::Char('L') => {
+                self.query_editor.line_end();
+            }
+            KeyCode::Char('w') => {
+                self.query_editor.word_right();
+            }
+            KeyCode::Char('b') => {
+                self.query_editor.word_left();
+            }
+            KeyCode::Char('d') => {
+                self.pending_d = true;
+            }
+            KeyCode::Char('u') => {
+                self.undo();
                 self.query_text = self.query_editor.value.clone();
             }
+            KeyCode::Char('R') => {
+                self.redo();
+                self.query_text = self.query_editor.value.clone();
+            }
+            KeyCode::Char('Y') => {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(&self.query_editor.value);
+                    self.set_status("Query copied to clipboard");
+                }
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if self.query_editor.cursor_pos < self.query_editor.value.len() {
+                    self.push_undo_snapshot();
+                    self.query_editor.value.remove(self.query_editor.cursor_pos);
+                    self.query_text = self.query_editor.value.clone();
+                }
+            }
+            KeyCode::Backspace => {
+                if self.query_editor.cursor_pos > 0 {
+                    self.push_undo_snapshot();
+                    self.query_editor.delete_char_before_cursor();
+                    self.query_text = self.query_editor.value.clone();
+                }
+            }
             KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
-                self.editing_query = false;
                 self.query_text = self.query_editor.value.clone();
                 if !self.query_text.is_empty() {
                     let sql = self.query_text.clone();
                     self.pending_action = PendingAction::RunQuery(sql);
                 }
             }
-            _ => {
-                self.query_editor.handle_key(key);
-            }
+            _ => {}
         }
     }
 
@@ -1536,7 +1695,10 @@ impl App {
             }
         }
 
-        if self.editing_query && self.current_page == Page::QueryEditor {
+        if self.editing_query
+            && self.current_page == Page::QueryEditor
+            && self.query_editor_focus == QueryEditorFocus::Editor
+        {
             self.handle_query_edit_key(&key);
             return;
         }
@@ -1575,6 +1737,7 @@ impl App {
                 if self.current_page == Page::QueryEditor {
                     self.editing_query = false;
                 }
+                self.apply_cursor_style();
             }
             KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
                 if self.current_page == Page::QueryEditor && !self.query_text.is_empty() {
@@ -1584,8 +1747,7 @@ impl App {
             }
             KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
                 if self.current_page == Page::QueryEditor {
-                    self.editing_query = true;
-                    self.query_editor.set_value(&self.query_text);
+                    self.enter_query_editor_normal_mode();
                 }
             }
             KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
@@ -2072,9 +2234,26 @@ impl App {
                         self.focus = Focus::Main;
                         self.update_key_hints();
                         self.query_editor_focus = QueryEditorFocus::Editor;
+                        let editor_x = self.main_rect.x + 1;
+                        let editor_y = self.main_rect.y + 1;
+                        let editor_w = self.main_rect.width.saturating_sub(2);
+                        let editor_h = editor_bottom.saturating_sub(self.main_rect.y).saturating_sub(2);
+                        let editor_inner = Rect::new(editor_x, editor_y, editor_w, editor_h);
                         if is_double {
                             self.editing_query = true;
                             self.query_editor.set_value(&self.query_text);
+                            self.query_editor.set_cursor_from_click(col, editor_inner);
+                            self.push_undo_snapshot();
+                            self.input_mode = InputMode::Insert;
+                            self.pending_j = false;
+                            self.pending_d = false;
+                        } else {
+                            if self.editing_query {
+                                self.query_editor.set_cursor_from_click(col, editor_inner);
+                            } else {
+                                self.enter_query_editor_normal_mode();
+                                self.query_editor.set_cursor_from_click(col, editor_inner);
+                            }
                         }
                     } else {
                         self.inspector_edit_col = None;
@@ -2273,8 +2452,32 @@ impl App {
             self.conn_page_mode = ConnPageMode::Browse;
         }
         self.current_page = page;
+        if page == Page::QueryEditor {
+            self.enter_query_editor_normal_mode();
+        }
         self.update_key_hints();
         self.set_status(format!("Switched to {}", page.title()));
+    }
+
+    fn enter_query_editor_normal_mode(&mut self) {
+        self.editing_query = true;
+        self.input_mode = InputMode::Normal;
+        self.pending_j = false;
+        self.pending_d = false;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.query_editor.set_value(&self.query_text);
+        self.query_editor.set_cursor_to_content_end();
+        self.apply_cursor_style();
+    }
+
+    fn apply_cursor_style(&self) {
+        let style = if self.editing_query && self.input_mode == InputMode::Insert {
+            SetCursorStyle::SteadyBar
+        } else {
+            SetCursorStyle::SteadyBlock
+        };
+        let _ = crossterm::execute!(std::io::stdout(), style);
     }
 
     fn cycle_focus(&mut self) {
@@ -2283,6 +2486,7 @@ impl App {
                 Focus::Sidebar => {
                     self.focus = Focus::Main;
                     self.query_editor_focus = QueryEditorFocus::Editor;
+                    self.enter_query_editor_normal_mode();
                 }
                 Focus::Main => match self.query_editor_focus {
                     QueryEditorFocus::Editor => {
@@ -2338,6 +2542,7 @@ impl App {
                 Focus::Main => match self.query_editor_focus {
                     QueryEditorFocus::Results => {
                         self.query_editor_focus = QueryEditorFocus::Editor;
+                        self.enter_query_editor_normal_mode();
                     }
                     QueryEditorFocus::Editor => {
                         self.focus = Focus::Sidebar;

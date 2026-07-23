@@ -7,6 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{App, CellEditFocus, CellEditMode, Focus, InputMode, QueryEditorFocus};
+use crate::models::connection::DatabaseType;
+use crate::syntax;
 use crate::widgets::mongo_doc_list::render_mongo_doc_list;
 
 fn render_cell_edit_popup(frame: &mut Frame, area: Rect, app: &App) {
@@ -117,7 +119,83 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     frame.render_widget(&editor_block, top_area);
 
     if app.editing_query {
-        app.query_editor.render_into(frame, editor_inner);
+        let lines = app.query_editor.lines();
+        let (cursor_row, cursor_col) = app.query_editor.cursor();
+        let cursor_row = cursor_row as usize;
+        let cursor_col = cursor_col as usize;
+
+        let db_type = app.pool.active_id.and_then(|id| {
+            app.connections
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| &c.db_type)
+        });
+
+        let sql_fn: fn(&str) -> Vec<Span<'_>> = syntax::highlight_sql_line;
+        let highlighter: fn(&str) -> Vec<Span<'_>> = match db_type {
+            Some(DatabaseType::MongoDB) => {
+                syntax::highlight_mongo_line as fn(&str) -> Vec<Span<'_>>
+            }
+            Some(DatabaseType::Redis) => syntax::highlight_redis_line as fn(&str) -> Vec<Span<'_>>,
+            _ => sql_fn,
+        };
+
+        let highlighted_lines: Vec<Line<'_>> = lines
+            .iter()
+            .enumerate()
+            .map(|(row, line)| {
+                let spans = if row == cursor_row {
+                    let spans = highlighter(line);
+                    let mut col = 0;
+                    let mut modified = Vec::new();
+                    for span in &spans {
+                        let span_s = span.content.to_string();
+                        let span_w = span_s.len();
+                        let span_end = col + span_w;
+                        if col <= cursor_col && cursor_col < span_end {
+                            let offset = cursor_col - col;
+                            let before: String = span_s.chars().take(offset).collect();
+                            let cchar: String = span_s.chars().skip(offset).take(1).collect();
+                            let after: String = span_s.chars().skip(offset + 1).collect();
+                            if !before.is_empty() {
+                                modified.push(Span::styled(before, span.style));
+                            }
+                            if !cchar.is_empty() {
+                                modified.push(Span::styled(
+                                    cchar,
+                                    span.style.add_modifier(Modifier::REVERSED),
+                                ));
+                            }
+                            if !after.is_empty() {
+                                modified.push(Span::styled(after, span.style));
+                            }
+                        } else {
+                            modified.push(span.clone());
+                        }
+                        col = span_end;
+                    }
+                    modified
+                } else {
+                    highlighter(line)
+                };
+                let line_style = if row == cursor_row {
+                    Style::default().bg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                Line::from(spans).style(line_style)
+            })
+            .collect();
+
+        frame.render_widget(Paragraph::new(Text::from(highlighted_lines)), editor_inner);
+
+        if editor_focused {
+            let cy = editor_inner.y + cursor_row as u16;
+            let cx = editor_inner.x + cursor_col as u16;
+            if cy < editor_inner.y + editor_inner.height {
+                frame.set_cursor_position((cx, cy));
+            }
+        }
     } else if app.query_text.is_empty() {
         let hint = Paragraph::new(
             "Double-click a table in the sidebar\nto generate a SELECT query.\n\
@@ -126,7 +204,26 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(hint, editor_inner);
     } else {
-        let text = Paragraph::new(app.query_text.as_str()).wrap(Wrap { trim: false });
+        let db_type = app.pool.active_id.and_then(|id| {
+            app.connections
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| &c.db_type)
+        });
+        let sql_fn: fn(&str) -> Vec<Span<'_>> = syntax::highlight_sql_line;
+        let highlighter: fn(&str) -> Vec<Span<'_>> = match db_type {
+            Some(DatabaseType::MongoDB) => {
+                syntax::highlight_mongo_line as fn(&str) -> Vec<Span<'_>>
+            }
+            Some(DatabaseType::Redis) => syntax::highlight_redis_line as fn(&str) -> Vec<Span<'_>>,
+            _ => sql_fn,
+        };
+        let text_lines: Vec<Line<'_>> = app
+            .query_text
+            .lines()
+            .map(|line| Line::from(highlighter(line)))
+            .collect();
+        let text = Paragraph::new(Text::from(text_lines)).wrap(Wrap { trim: false });
         frame.render_widget(text, editor_inner);
     }
 

@@ -117,7 +117,7 @@ cargo run --release
 | Key | Action |
 |-----|--------|
 | `1`–`8` | Switch pages |
-| `q` | Quit |
+| `Ctrl+Q` | Quit |
 | `?` | Help |
 | `Tab` | Cycle focus forward |
 | `Shift+Tab` | Cycle focus reverse |

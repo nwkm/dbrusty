@@ -1,4 +1,5 @@
 pub mod app;
+pub mod completion;
 pub mod config;
 pub mod database;
 pub mod events;
@@ -6,5 +7,6 @@ pub mod logging;
 pub mod models;
 pub mod providers;
 pub mod storage;
+pub mod syntax;
 pub mod ui;
 pub mod widgets;

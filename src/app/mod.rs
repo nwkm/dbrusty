@@ -34,6 +34,8 @@ use crate::providers::sqlite::SqliteProvider;
 use crate::storage;
 use crate::ui;
 use crate::widgets::input::InputField;
+use crate::completion::CompletionState;
+use ratatui_textarea::TextArea;
 use crate::widgets::mongo_doc_list::MongoDocListState;
 use crate::widgets::tree::TreeState;
 
@@ -308,9 +310,10 @@ pub struct App {
     pub cell_edit_mode: CellEditMode,
     pub cell_edit_input: InputField,
     pub cell_edit_focus: CellEditFocus,
-    pub query_editor: InputField,
+    pub query_editor: TextArea<'static>,
     pub editing_query: bool,
     pub query_editor_focus: QueryEditorFocus,
+    pub completion_state: CompletionState,
     pub result_scroll_v: usize,
     pub result_scroll_h: u16,
     pub global_search: Option<crate::ui::search::GlobalSearchState>,
@@ -319,8 +322,6 @@ pub struct App {
     pub mongo_raw_documents: Option<Vec<bson::Document>>,
     pub mongo_doc_state: MongoDocListState,
     pub mongo_edit_path: Option<String>,
-    pub undo_stack: Vec<String>,
-    pub redo_stack: Vec<String>,
     pub pending_j: bool,
     pub pending_d: bool,
     pub is_busy: bool,
@@ -433,7 +434,7 @@ impl App {
             input_mode: InputMode::Normal,
             focus: Focus::Main,
             status_message: String::new(),
-            key_hints: String::from(" q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector"),
+            key_hints: String::from(" Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector"),
             pool: ConnectionPool::new(),
             connections,
             conn_list_selected: 0,
@@ -468,9 +469,14 @@ impl App {
             cell_edit_mode: CellEditMode::Inactive,
             cell_edit_input: InputField::new(""),
             cell_edit_focus: CellEditFocus::Editor,
-            query_editor: InputField::new("Enter SQL query..."),
+            query_editor: {
+                let mut ta = TextArea::default();
+                ta.set_placeholder_text("Enter SQL query...");
+                ta
+            },
             editing_query: false,
             query_editor_focus: QueryEditorFocus::Editor,
+            completion_state: CompletionState::new(),
             result_scroll_v: 0,
             result_scroll_h: 0,
             global_search: None,
@@ -479,8 +485,6 @@ impl App {
             mongo_raw_documents: None,
             mongo_doc_state: MongoDocListState::new(),
             mongo_edit_path: None,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
             pending_j: false,
             pending_d: false,
             is_busy: false,
@@ -662,7 +666,8 @@ impl App {
             }
             PendingAction::OpenQuery(query) => {
                 self.query_text.clone_from(&query);
-                self.query_editor.set_value(&query);
+                let lines: Vec<String> = query.lines().map(String::from).collect();
+                self.query_editor = TextArea::from(lines);
                 self.current_page = Page::QueryEditor;
                 self.query_editor_focus = QueryEditorFocus::Results;
                 if self.is_busy {
@@ -694,7 +699,7 @@ impl App {
                         self.pool.unregister(id);
                         self.explorer_tree = TreeState::new(Vec::new());
                         self.query_text.clear();
-                        self.query_editor.set_value("");
+                        self.query_editor = TextArea::default();
                         self.set_status(format!("Disconnected from \"{}\"", name));
                     }
                 }
@@ -729,7 +734,7 @@ impl App {
                     self.pool.register(id, provider);
                     self.pool.set_active(id);
                     self.query_text.clear();
-                    self.query_editor.set_value("");
+                    self.query_editor = TextArea::default();
 
                     for (schema_key, tables) in &tables_data {
                         self.metadata_cache
@@ -920,7 +925,7 @@ impl App {
                 self.pool.register(conn.id, provider);
                 self.pool.set_active(conn.id);
                 self.query_text.clear();
-                self.query_editor.set_value("");
+                self.query_editor = TextArea::default();
 
                 if let Some(provider) = self.pool.get_active() {
                     let databases = provider.get_databases().await.unwrap_or_default();
@@ -1121,27 +1126,6 @@ impl App {
         }
     }
 
-    fn push_undo_snapshot(&mut self) {
-        self.undo_stack.push(self.query_editor.value.clone());
-        self.redo_stack.clear();
-    }
-
-    fn undo(&mut self) {
-        if let Some(snapshot) = self.undo_stack.pop() {
-            self.redo_stack.push(self.query_editor.value.clone());
-            self.query_editor.value = snapshot;
-            self.query_editor.cursor_pos = self.query_editor.value.len();
-        }
-    }
-
-    fn redo(&mut self) {
-        if let Some(snapshot) = self.redo_stack.pop() {
-            self.undo_stack.push(self.query_editor.value.clone());
-            self.query_editor.value = snapshot;
-            self.query_editor.cursor_pos = self.query_editor.value.len();
-        }
-    }
-
     fn handle_query_edit_key(&mut self, key: &KeyEvent) {
         match key.code {
             KeyCode::Tab if self.cell_edit_mode == CellEditMode::Inactive => {
@@ -1156,40 +1140,129 @@ impl App {
         }
 
         if self.input_mode == InputMode::Insert {
+            // If completion popup is visible, handle navigation keys first
+            if self.completion_state.visible {
+                match key.code {
+                    KeyCode::Up => {
+                        self.completion_state.select_prev();
+                        return;
+                    }
+                    KeyCode::Down => {
+                        self.completion_state.select_next();
+                        return;
+                    }
+                    KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+                        self.completion_state.select_prev();
+                        return;
+                    }
+                    KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+                        self.completion_state.select_next();
+                        return;
+                    }
+                    KeyCode::Tab | KeyCode::Enter => {
+                        self.accept_completion();
+                        return;
+                    }
+                    KeyCode::Esc => {
+                        self.completion_state.cancel();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
             match key.code {
                 KeyCode::Esc => {
                     self.input_mode = InputMode::Normal;
                     self.pending_j = false;
-                    self.query_text = self.query_editor.value.clone();
+                    self.completion_state.cancel();
+                    self.sync_query_text();
                     self.apply_cursor_style();
                 }
                 KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
                     self.input_mode = InputMode::Normal;
                     self.pending_j = false;
-                    self.query_text = self.query_editor.value.clone();
+                    self.completion_state.cancel();
+                    self.sync_query_text();
                     self.apply_cursor_style();
                     if !self.query_text.is_empty() {
                         let sql = self.query_text.clone();
                         self.pending_action = PendingAction::RunQuery(sql);
                     }
                 }
+                KeyCode::Char(' ') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.show_completion_popup();
+                }
                 KeyCode::Char('j') => {
                     if self.pending_j {
-                        self.query_editor.delete_char_before_cursor();
+                        self.query_editor.delete_char();
                         self.pending_j = false;
                         self.input_mode = InputMode::Normal;
-                        self.query_text = self.query_editor.value.clone();
+                        self.completion_state.cancel();
+                        self.sync_query_text();
                         self.apply_cursor_style();
                     } else {
-                        self.query_editor.handle_key(key);
+                        self.query_editor.insert_char('j');
                         self.pending_j = true;
                     }
+                }
+                KeyCode::Char(c) => {
+                    self.pending_j = false;
+                    self.query_editor.insert_char(c);
+                    self.sync_query_text();
+                    self.update_completion();
+                }
+                KeyCode::Backspace => {
+                    self.pending_j = false;
+                    self.query_editor.delete_char();
+                    self.sync_query_text();
+                    self.update_completion();
+                }
+                KeyCode::Delete => {
+                    self.pending_j = false;
+                    self.query_editor.delete_next_char();
+                    self.sync_query_text();
+                    self.update_completion();
+                }
+                KeyCode::Tab => {
+                    self.pending_j = false;
+                    self.query_editor.insert_tab();
+                    self.sync_query_text();
+                    self.update_completion();
+                }
+                KeyCode::Enter => {
+                    self.pending_j = false;
+                    self.query_editor.insert_newline();
+                    self.sync_query_text();
+                }
+                KeyCode::Left => {
+                    self.pending_j = false;
+                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Back);
+                }
+                KeyCode::Right => {
+                    self.pending_j = false;
+                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Forward);
+                }
+                KeyCode::Up => {
+                    self.pending_j = false;
+                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Up);
+                }
+                KeyCode::Down => {
+                    self.pending_j = false;
+                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Down);
+                }
+                KeyCode::Home => {
+                    self.pending_j = false;
+                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Head);
+                }
+                KeyCode::End => {
+                    self.pending_j = false;
+                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::End);
                 }
                 _ => {
                     if self.pending_j {
                         self.pending_j = false;
                     }
-                    self.query_editor.handle_key(key);
                 }
             }
             return;
@@ -1200,15 +1273,13 @@ impl App {
             self.pending_d = false;
             match key.code {
                 KeyCode::Char('w') => {
-                    self.push_undo_snapshot();
-                    self.query_editor.delete_word_forward();
-                    self.query_text = self.query_editor.value.clone();
+                    self.query_editor.delete_next_word();
+                    self.sync_query_text();
                     return;
                 }
                 KeyCode::Char('b') => {
-                    self.push_undo_snapshot();
-                    self.query_editor.delete_word_backward();
-                    self.query_text = self.query_editor.value.clone();
+                    self.query_editor.delete_word();
+                    self.sync_query_text();
                     return;
                 }
                 _ => {}
@@ -1217,72 +1288,69 @@ impl App {
 
         match key.code {
             KeyCode::Char('i') => {
-                self.push_undo_snapshot();
                 self.input_mode = InputMode::Insert;
                 self.pending_j = false;
                 self.apply_cursor_style();
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                if self.query_editor.cursor_pos > 0 {
-                    self.query_editor.cursor_pos -= 1;
-                }
+                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Back);
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                if self.query_editor.cursor_pos < self.query_editor.value.len() {
-                    self.query_editor.cursor_pos += 1;
-                }
+                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Forward);
             }
-            KeyCode::Char('j') | KeyCode::Down => {}
-            KeyCode::Char('k') | KeyCode::Up => {}
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Down);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Up);
+            }
             KeyCode::Char('H') => {
-                self.query_editor.line_start();
+                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Head);
             }
             KeyCode::Char('L') => {
-                self.query_editor.line_end();
+                self.query_editor.move_cursor(ratatui_textarea::CursorMove::End);
             }
             KeyCode::Char('w') => {
-                self.query_editor.word_right();
+                self.query_editor.move_cursor(ratatui_textarea::CursorMove::WordForward);
             }
             KeyCode::Char('b') => {
-                self.query_editor.word_left();
+                self.query_editor.move_cursor(ratatui_textarea::CursorMove::WordBack);
             }
             KeyCode::Char('d') => {
                 self.pending_d = true;
             }
             KeyCode::Char('u') => {
-                self.undo();
-                self.query_text = self.query_editor.value.clone();
+                self.query_editor.undo();
+                self.sync_query_text();
             }
             KeyCode::Char('R') => {
-                self.redo();
-                self.query_text = self.query_editor.value.clone();
+                self.query_editor.redo();
+                self.sync_query_text();
             }
             KeyCode::Char('Y') => {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
-                    let _ = cb.set_text(&self.query_editor.value);
+                    let full_text = self.query_editor.lines().join("\n");
+                    let _ = cb.set_text(&full_text);
                     self.set_status("Query copied to clipboard");
                 }
             }
             KeyCode::Char('x') | KeyCode::Delete => {
-                if self.query_editor.cursor_pos < self.query_editor.value.len() {
-                    self.push_undo_snapshot();
-                    self.query_editor.value.remove(self.query_editor.cursor_pos);
-                    self.query_text = self.query_editor.value.clone();
-                }
+                self.query_editor.delete_next_char();
+                self.sync_query_text();
             }
             KeyCode::Backspace => {
-                if self.query_editor.cursor_pos > 0 {
-                    self.push_undo_snapshot();
-                    self.query_editor.delete_char_before_cursor();
-                    self.query_text = self.query_editor.value.clone();
-                }
+                self.query_editor.delete_char();
+                self.sync_query_text();
             }
             KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
-                self.query_text = self.query_editor.value.clone();
+                self.sync_query_text();
                 if !self.query_text.is_empty() {
                     let sql = self.query_text.clone();
                     self.pending_action = PendingAction::RunQuery(sql);
                 }
+            }
+            KeyCode::Char(' ') if key.modifiers == KeyModifiers::CONTROL => {
+                self.show_completion_popup();
             }
             _ => {}
         }
@@ -1910,7 +1978,7 @@ impl App {
             }
         } else {
             self.key_hints =
-                " q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector".to_string();
+                " Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector".to_string();
         }
     }
 
@@ -2056,6 +2124,13 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         self.status_message.clear();
 
+        if key.code == KeyCode::Char('q')
+            && key.modifiers == KeyModifiers::CONTROL
+        {
+            self.should_quit = true;
+            return;
+        }
+
         if self.global_search.is_some() && self.global_search.as_ref().unwrap().is_open {
             if crate::ui::search::handle_global_search_key(self, &key) {
                 return;
@@ -2086,7 +2161,7 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
+            KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
                 self.should_quit = true;
             }
             KeyCode::Char('1') => self.switch_to(Page::Dashboard),
@@ -2629,18 +2704,24 @@ impl App {
                         let editor_inner = Rect::new(editor_x, editor_y, editor_w, editor_h);
                         if is_double {
                             self.editing_query = true;
-                            self.query_editor.set_value(&self.query_text);
-                            self.query_editor.set_cursor_from_click(col, editor_inner);
-                            self.push_undo_snapshot();
+                            let lines: Vec<String> = self.query_text.lines().map(String::from).collect();
+                            self.query_editor = TextArea::from(lines);
+                            let cursor_row = row.saturating_sub(editor_inner.y);
+                            let cursor_col = col.saturating_sub(editor_inner.x);
+                            self.query_editor.move_cursor(ratatui_textarea::CursorMove::Jump(cursor_row, cursor_col));
                             self.input_mode = InputMode::Insert;
                             self.pending_j = false;
                             self.pending_d = false;
                         } else {
                             if self.editing_query {
-                                self.query_editor.set_cursor_from_click(col, editor_inner);
+                                let cursor_row = row.saturating_sub(editor_inner.y);
+                                let cursor_col = col.saturating_sub(editor_inner.x);
+                                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Jump(cursor_row, cursor_col));
                             } else {
                                 self.enter_query_editor_normal_mode();
-                                self.query_editor.set_cursor_from_click(col, editor_inner);
+                                let cursor_row = row.saturating_sub(editor_inner.y);
+                                let cursor_col = col.saturating_sub(editor_inner.x);
+                                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Jump(cursor_row, cursor_col));
                             }
                         }
                     } else {
@@ -2852,11 +2933,66 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.pending_j = false;
         self.pending_d = false;
-        self.undo_stack.clear();
-        self.redo_stack.clear();
-        self.query_editor.set_value(&self.query_text);
-        self.query_editor.set_cursor_to_content_end();
+        self.completion_state.cancel();
+        let lines: Vec<String> = self.query_text.lines().map(String::from).collect();
+        self.query_editor = TextArea::from(lines);
+        self.query_editor.move_cursor(ratatui_textarea::CursorMove::Bottom);
+        self.query_editor.move_cursor(ratatui_textarea::CursorMove::End);
         self.apply_cursor_style();
+    }
+
+    fn sync_query_text(&mut self) {
+        self.query_text = self.query_editor.lines().join("\n");
+    }
+
+    fn update_completion(&mut self) {
+        let (cursor_row, cursor_col) = self.query_editor.cursor();
+        let lines = self.query_editor.lines();
+        let current_line = lines.get(cursor_row as usize).map(|s| s.as_str()).unwrap_or("");
+        let db_type = self.active_db_type();
+
+        use crate::completion::provider::CompletionProvider;
+        use crate::completion::sql_provider::SqlCompletionProvider;
+        use crate::completion::mongo_provider::MongoCompletionProvider;
+        use crate::completion::redis_provider::RedisCompletionProvider;
+
+        let provider: Box<dyn CompletionProvider> = match db_type.as_ref() {
+            Some(crate::models::connection::DatabaseType::MongoDB) => Box::new(MongoCompletionProvider),
+            Some(crate::models::connection::DatabaseType::Redis) => Box::new(RedisCompletionProvider),
+            _ => Box::new(SqlCompletionProvider),
+        };
+
+        self.completion_state.update(
+            current_line,
+            cursor_row as u16,
+            cursor_col as u16,
+            provider.as_ref(),
+            &self.metadata_cache,
+            db_type.as_ref(),
+        );
+    }
+
+    fn show_completion_popup(&mut self) {
+        self.update_completion();
+        self.completion_state.visible = true;
+    }
+
+    fn accept_completion(&mut self) {
+        let item = match self.completion_state.accept() {
+            Some(item) => item,
+            None => return,
+        };
+
+        let prefix_len = self.completion_state.prefix.len();
+        for _ in 0..prefix_len {
+            self.query_editor.delete_char();
+        }
+
+        for ch in item.label.chars() {
+            self.query_editor.insert_char(ch);
+        }
+
+        self.sync_query_text();
     }
 
     fn apply_cursor_style(&self) {

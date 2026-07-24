@@ -22,15 +22,30 @@ All notable changes to Dbrusty are documented here.
 - **Seed script** (`scripts/seed.sh`) to build and run all seed binaries against Docker databases
   - Per-database skip flags (`--skip-postgres`, `--skip-mysql`, `--skip-mariadb`, `--skip-mongodb`)
 - Connection success now switches to Explorer page with sidebar focus
+- **Results pane fuzzy search** (`Alt+F` in Results focus)
+  - Type-ahead filter using nucleo fuzzy matching across all cell values
+  - Character-level match highlighting (yellow bold on normal rows, cyan on selected)
+  - Filter bar shows `Result > ...` with match count, cursor navigation (Left/Right/Home/End)
+  - `Esc` clears filter, `Enter` accepts and keeps filter active, `Alt+F` toggles
+  - Filter re-applies automatically on new query results
+  - Navigation (arrow keys, PageUp/Down, Home/End) stays within filtered row set
+  - Filter input is scoped to Results focus — no key capture when other panes are focused
 
 ### Changed
 - `Ctrl+E` to enter editing mode starts in NORMAL mode (not INSERT)
 - `Ctrl+R` to run query stays in editing mode (NORMAL) instead of exiting
 - Query editor block title shows `[NORMAL]` or `[INSERT]` based on current mode
 - Focus dispatch now routes to editor handler only when the editor pane is focused
+- Query Editor layout uses `Min(0)` constraint so editor collapses when hidden (`Alt+I`)
+- Key hints updated for `Alt+I` (toggle editor) and `Alt+F` (toggle filter)
+- Results border title shows `[FILTER]` when filter input is active
 
 ### Fixed
 - Keybindings on non-editor panes (Sidebar, Results, Inspector) work correctly when editor is active
+- **Result filter no longer captures keys when focus is elsewhere** — filter input is scoped to Results pane only
+- **Empty filter results show zero rows instead of falling back to full dataset** — filter remains active with "0 / N results" display
+- **Filter matches against cell values only (not column names)** — prevents phantom matches from column name substrings
+- **Filtered row navigation respects filtered set** — arrow keys, PageUp/Down, Home/End stay within filtered indices
 
 ---
 

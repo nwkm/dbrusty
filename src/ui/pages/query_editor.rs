@@ -91,10 +91,83 @@ fn render_cell_edit_popup(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
-    let vertical = Layout::vertical([Constraint::Percentage(25), Constraint::Percentage(75)]);
-    let [top_area, results_area] = vertical.areas(area);
+fn render_result_filter(frame: &mut Frame, area: Rect, app: &App) {
+    let input_display = format!("Result > {}", app.result_filter_input);
+    let input_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let input_line = Line::from(Span::styled(input_display, input_style));
 
+    let count = app.result_filtered_indices.len();
+    let total = app.query_data.len();
+    let count_text = if app.result_filter_input.is_empty() {
+        format!(" {} results total", total)
+    } else {
+        format!(" {} / {} results", count, total)
+    };
+    let count_line = Line::from(Span::styled(
+        count_text,
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![input_line, count_line])),
+        area,
+    );
+
+    if area.width > 0 {
+        let cursor_x = area.x + "Result > ".len() as u16 + app.result_filter_cursor as u16;
+        let cursor_y = area.y;
+        if cursor_x < area.x + area.width {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+}
+
+fn build_cell_spans<'a>(
+    val: &str,
+    positions: &[u32],
+    width: usize,
+    base_style: Style,
+    hl_style: Style,
+) -> Vec<Span<'a>> {
+    if positions.is_empty() {
+        return vec![Span::styled(
+            format!("{:width$}", val, width = width),
+            base_style,
+        )];
+    }
+
+    let mut spans = Vec::new();
+    let chars: Vec<char> = val.chars().collect();
+    let mut prev = 0;
+    for &pos in positions {
+        let p = pos as usize;
+        if p >= chars.len() {
+            continue;
+        }
+        if p > prev {
+            let s: String = chars[prev..p].iter().collect();
+            spans.push(Span::styled(s, base_style));
+        }
+        let s: String = chars[p..=p].iter().collect();
+        spans.push(Span::styled(s, hl_style));
+        prev = p + 1;
+    }
+    if prev < chars.len() {
+        let s: String = chars[prev..].iter().collect();
+        spans.push(Span::styled(s, base_style));
+    }
+
+    let total: usize = spans.iter().map(|s| s.content.len()).sum();
+    if total < width {
+        spans.push(Span::raw(" ".repeat(width - total)));
+    }
+
+    spans
+}
+
+fn render_editor(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     let editor_focused =
         focused && app.focus == Focus::Main && app.query_editor_focus == QueryEditorFocus::Editor;
     let editor_border = if editor_focused {
@@ -115,8 +188,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(editor_border));
-    let editor_inner = editor_block.inner(top_area);
-    frame.render_widget(&editor_block, top_area);
+    let editor_inner = editor_block.inner(area);
+    frame.render_widget(&editor_block, area);
 
     if app.editing_query {
         let lines = app.query_editor.lines();
@@ -226,9 +299,28 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         let text = Paragraph::new(Text::from(text_lines)).wrap(Wrap { trim: false });
         frame.render_widget(text, editor_inner);
     }
+}
+
+pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+    let (top_area, results_area) = if app.show_query_editor {
+        let vertical = Layout::vertical([Constraint::Percentage(25), Constraint::Min(0)]);
+        let [editor_area, res_area] = vertical.areas(area);
+        (Some(editor_area), res_area)
+    } else {
+        (None, area)
+    };
+
+    if let Some(editor_area) = top_area {
+        render_editor(frame, editor_area, app, focused);
+    }
 
     let results_focused =
         focused && app.focus == Focus::Main && app.query_editor_focus == QueryEditorFocus::Results;
+    let results_title = if app.result_filter_active {
+        " Results [FILTER] "
+    } else {
+        " Results "
+    };
     let results_border = if results_focused && app.cell_edit_mode == CellEditMode::Inactive {
         Color::Green
     } else if app.cell_edit_mode == CellEditMode::Editing {
@@ -237,17 +329,30 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         Color::DarkGray
     };
     let results_block = Block::default()
-        .title(" Results ")
+        .title(results_title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(results_border));
     let results_inner = results_block.inner(results_area);
     frame.render_widget(&results_block, results_area);
 
+    let filter_active = app.result_filter_active;
+    let (filter_area, data_area) = if filter_active {
+        let fl = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]);
+        let [f, d] = fl.areas(results_inner);
+        (Some(f), d)
+    } else {
+        (None, results_inner)
+    };
+
+    if let Some(fa) = filter_area {
+        render_result_filter(frame, fa, app);
+    }
+
     if app.is_mongo_query() {
         if let Some(documents) = app.mongo_raw_documents.as_deref() {
             render_mongo_doc_list(
                 frame,
-                results_inner,
+                data_area,
                 documents,
                 &app.mongo_doc_state,
                 results_focused,
@@ -287,11 +392,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
             })
             .collect::<Vec<_>>();
 
-        let header_count = 2.min(results_inner.height as usize);
+        let header_count = 2.min(data_area.height as usize);
         let header_area = Rect::new(
-            results_inner.x,
-            results_inner.y,
-            results_inner.width,
+            data_area.x,
+            data_area.y,
+            data_area.width,
             header_count as u16,
         );
 
@@ -305,52 +410,115 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         );
 
         let data_top = header_count as u16;
-        let data_height = results_inner.height.saturating_sub(data_top);
+        let data_height = data_area.height.saturating_sub(data_top);
         if data_height > 0 {
-            let data_area = Rect::new(
-                results_inner.x,
-                results_inner.y + data_top,
-                results_inner.width,
+            let body_area = Rect::new(
+                data_area.x,
+                data_area.y + data_top,
+                data_area.width,
                 data_height,
             );
 
-            // Virtual scrolling: only render visible rows
-            let visible_start = app.result_scroll_v;
-            let visible_end = (visible_start + data_height as usize).min(app.query_data.len());
+            let using_filter = !app.result_filter_input.is_empty();
 
-            let data_lines: Vec<Line> = app.query_data[visible_start..visible_end]
-                .iter()
-                .enumerate()
-                .map(|(i, row)| {
-                    let ri = visible_start + i;
-                    let s = row
-                        .iter()
-                        .enumerate()
-                        .map(|(ci, val)| {
+            let (visible_start, visible_end) = if using_filter {
+                let fi = &app.result_filtered_indices;
+                let start = app.result_scroll_v.min(fi.len().saturating_sub(1));
+                let end = (start + data_height as usize).min(fi.len());
+                (start, end)
+            } else {
+                let start = app
+                    .result_scroll_v
+                    .min(app.query_data.len().saturating_sub(1));
+                let end = (start + data_height as usize).min(app.query_data.len());
+                (start, end)
+            };
+
+            let data_lines: Vec<Line> = if using_filter {
+                let fi = &app.result_filtered_indices;
+                fi[visible_start..visible_end]
+                    .iter()
+                    .enumerate()
+                    .map(|(vi, &ri)| {
+                        let row = &app.query_data[ri];
+                        let is_selected = ri == app.selected_row && results_focused;
+                        let base_style = if is_selected {
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        };
+                        let hl_style = if is_selected {
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .bg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        };
+                        let row_highlights = app
+                            .result_filter_highlights
+                            .get(visible_start + vi)
+                            .map(|h| h.as_slice())
+                            .unwrap_or(&[]);
+                        let mut row_spans = Vec::new();
+                        for (ci, val) in row.iter().enumerate() {
                             if ci > 0 {
-                                format!(" | {:width$}", val, width = app.query_col_widths[ci])
-                            } else {
-                                format!("{:width$}", val, width = app.query_col_widths[ci])
+                                row_spans.push(Span::styled(" | ", base_style));
                             }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-                    let is_selected = ri == app.selected_row && results_focused;
-                    let style = if is_selected {
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::White)
-                    };
-                    Line::from(Span::styled(s, style))
-                })
-                .collect();
+                            let cell_positions =
+                                row_highlights.get(ci).map(|v| v.as_slice()).unwrap_or(&[]);
+                            let cell_spans = build_cell_spans(
+                                val,
+                                cell_positions,
+                                app.query_col_widths[ci],
+                                base_style,
+                                hl_style,
+                            );
+                            row_spans.extend(cell_spans);
+                        }
+                        Line::from(row_spans)
+                    })
+                    .collect()
+            } else {
+                app.query_data[visible_start..visible_end]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| {
+                        let ri = visible_start + i;
+                        let s = row
+                            .iter()
+                            .enumerate()
+                            .map(|(ci, val)| {
+                                if ci > 0 {
+                                    format!(" | {:width$}", val, width = app.query_col_widths[ci])
+                                } else {
+                                    format!("{:width$}", val, width = app.query_col_widths[ci])
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+                        let is_selected = ri == app.selected_row && results_focused;
+                        let style = if is_selected {
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        };
+                        Line::from(Span::styled(s, style))
+                    })
+                    .collect()
+            };
 
             frame.render_widget(
                 Paragraph::new(Text::from(data_lines)).scroll((0, app.result_scroll_h)),
-                data_area,
+                body_area,
             );
         }
     } else if !app.query_results.is_empty() {
@@ -363,13 +531,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
             .min(all_lines.len());
 
         let header_lines = &all_lines[..header_end];
-        let data_lines = &all_lines[header_end..];
+        let data_body = &all_lines[header_end..];
 
-        let header_count = header_end.min(results_inner.height as usize);
+        let header_count = header_end.min(data_area.height as usize);
         let header_area = Rect::new(
-            results_inner.x,
-            results_inner.y,
-            results_inner.width,
+            data_area.x,
+            data_area.y,
+            data_area.width,
             header_count as u16,
         );
 
@@ -392,32 +560,32 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         );
 
         let data_top = header_count as u16;
-        let data_height = results_inner.height.saturating_sub(data_top);
-        if data_height > 0 && !data_lines.is_empty() {
-            let data_area = Rect::new(
-                results_inner.x,
-                results_inner.y + data_top,
-                results_inner.width,
+        let data_height = data_area.height.saturating_sub(data_top);
+        if data_height > 0 && !data_body.is_empty() {
+            let body_area = Rect::new(
+                data_area.x,
+                data_area.y + data_top,
+                data_area.width,
                 data_height,
             );
 
-            let data_text: Vec<Line> = data_lines
+            let raw_text: Vec<Line> = data_body
                 .iter()
                 .map(|s| Line::from(Span::styled(*s, Style::default().fg(Color::White))))
                 .collect();
             frame.render_widget(
-                Paragraph::new(ratatui::text::Text::from(data_text))
+                Paragraph::new(ratatui::text::Text::from(raw_text))
                     .scroll((app.result_scroll_v as u16, app.result_scroll_h)),
-                data_area,
+                body_area,
             );
         }
 
-        if data_lines.is_empty() && results_inner.height > header_count as u16 {
+        if data_body.is_empty() && data_area.height > header_count as u16 {
             let msg_area = Rect::new(
-                results_inner.x,
-                results_inner.y + header_count as u16,
-                results_inner.width,
-                results_inner.height - header_count as u16,
+                data_area.x,
+                data_area.y + header_count as u16,
+                data_area.width,
+                data_area.height - header_count as u16,
             );
             let msg = Paragraph::new(header_lines.last().copied().unwrap_or("")).style(
                 Style::default()
@@ -429,7 +597,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     } else {
         let hint = Paragraph::new("Run a query to see results here.")
             .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(hint, results_inner);
+        frame.render_widget(hint, data_area);
     }
 
     if app.cell_edit_mode == CellEditMode::Editing {

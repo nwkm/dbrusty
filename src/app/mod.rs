@@ -301,6 +301,12 @@ pub struct App {
     pub selected_row: usize,
     pub selected_col: usize,
     pub show_inspector: bool,
+    pub show_query_editor: bool,
+    pub result_filter_active: bool,
+    pub result_filter_input: String,
+    pub result_filter_cursor: usize,
+    pub result_filtered_indices: Vec<usize>,
+    pub result_filter_highlights: Vec<Vec<Vec<u32>>>,
     pub inspector_scroll: usize,
     pub inspector_edit_col: Option<usize>,
     pub inspector_edit_value: String,
@@ -316,7 +322,6 @@ pub struct App {
     pub completion_state: CompletionState,
     pub result_scroll_v: usize,
     pub result_scroll_h: u16,
-    pub global_search: Option<crate::ui::search::GlobalSearchState>,
     pub json_tree_state: TreeState,
     pub json_tree_cell: (usize, usize),
     pub mongo_raw_documents: Option<Vec<bson::Document>>,
@@ -396,10 +401,13 @@ impl App {
     }
 
     fn clamp_result_scroll(&mut self) {
-        if !self.query_data.is_empty() {
-            self.result_scroll_v = self
-                .result_scroll_v
-                .min(self.query_data.len().saturating_sub(1));
+        let total = if self.has_result_filter() {
+            self.result_filtered_indices.len()
+        } else {
+            self.query_data.len()
+        };
+        if total > 0 {
+            self.result_scroll_v = self.result_scroll_v.min(total.saturating_sub(1));
             let max_h = self.max_result_scroll_h();
             self.result_scroll_h = self.result_scroll_h.min(max_h);
         } else {
@@ -434,7 +442,7 @@ impl App {
             input_mode: InputMode::Normal,
             focus: Focus::Main,
             status_message: String::new(),
-            key_hints: String::from(" Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector"),
+            key_hints: String::from(" Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector | Alt-I:Editor"),
             pool: ConnectionPool::new(),
             connections,
             conn_list_selected: 0,
@@ -460,6 +468,12 @@ impl App {
             selected_row: 0,
             selected_col: 0,
             show_inspector: false,
+            show_query_editor: false,
+            result_filter_active: false,
+            result_filter_input: String::new(),
+            result_filter_cursor: 0,
+            result_filtered_indices: Vec::new(),
+            result_filter_highlights: Vec::new(),
             inspector_scroll: 0,
             inspector_edit_col: None,
             inspector_edit_value: String::new(),
@@ -479,7 +493,6 @@ impl App {
             completion_state: CompletionState::new(),
             result_scroll_v: 0,
             result_scroll_h: 0,
-            global_search: None,
             json_tree_state: TreeState::new(Vec::new()),
             json_tree_cell: (usize::MAX, usize::MAX),
             mongo_raw_documents: None,
@@ -819,6 +832,9 @@ impl App {
                             self.query_data_typed = result.rows.clone();
                             self.query_column_info = result.columns.clone();
                             self.query_col_widths = col_widths;
+                            if self.result_filter_active || !self.result_filter_input.is_empty() {
+                                self.apply_result_filter();
+                            }
                         } else {
                             let mut output = String::new();
                             output.push_str(&format!("({:?})", result.duration));
@@ -1009,7 +1025,6 @@ impl App {
         match self.pool.get_active() {
             Some(provider) => match provider.execute_query(sql).await {
                 Ok(result) => {
-                    // Compute column widths (sample first 1000 rows for performance)
                     let sample_size = 1000.min(result.rows.len());
                     let col_widths: Vec<usize> = result
                         .columns
@@ -1049,6 +1064,9 @@ impl App {
                             self.query_data_typed = result.rows.clone();
                             self.query_column_info = result.columns.clone();
                             self.query_col_widths = col_widths;
+                            if self.result_filter_active || !self.result_filter_input.is_empty() {
+                                self.apply_result_filter();
+                            }
                         } else {
                             let mut output = String::new();
                             output.push_str(&format!("({:?})", result.duration));
@@ -1448,7 +1466,11 @@ impl App {
             }
             KeyCode::Down => {
                 self.inspector_edit_col = None;
-                if self.selected_row + 1 < self.query_data.len() {
+                if self.has_result_filter() {
+                    if let Some(next) = self.next_filtered_row(1) {
+                        self.selected_row = next;
+                    }
+                } else if self.selected_row + 1 < self.query_data.len() {
                     self.selected_row += 1;
                 }
                 self.ensure_cell_visible(data_height);
@@ -1457,7 +1479,11 @@ impl App {
             }
             KeyCode::Up => {
                 self.inspector_edit_col = None;
-                if self.selected_row > 0 {
+                if self.has_result_filter() {
+                    if let Some(next) = self.next_filtered_row(-1) {
+                        self.selected_row = next;
+                    }
+                } else if self.selected_row > 0 {
                     self.selected_row -= 1;
                 }
                 self.ensure_cell_visible(data_height);
@@ -1466,31 +1492,48 @@ impl App {
             }
             KeyCode::PageUp => {
                 self.inspector_edit_col = None;
-                self.selected_row = self.selected_row.saturating_sub(data_height);
+                if self.has_result_filter() {
+                    let cur_pos = self.result_filtered_indices.iter().position(|&i| i == self.selected_row).unwrap_or(0);
+                    let new_pos = cur_pos.saturating_sub(data_height);
+                    self.selected_row = self.result_filtered_indices[new_pos];
+                } else {
+                    self.selected_row = self.selected_row.saturating_sub(data_height);
+                }
                 self.ensure_cell_visible(data_height);
                 self.rebuild_json_tree();
                 true
             }
             KeyCode::PageDown => {
                 self.inspector_edit_col = None;
-                self.selected_row = self
-                    .selected_row
-                    .saturating_add(data_height)
-                    .min(self.query_data.len().saturating_sub(1));
+                if self.has_result_filter() {
+                    let cur_pos = self.result_filtered_indices.iter().position(|&i| i == self.selected_row).unwrap_or(0);
+                    let new_pos = (cur_pos + data_height).min(self.result_filtered_indices.len().saturating_sub(1));
+                    self.selected_row = self.result_filtered_indices[new_pos];
+                } else {
+                    self.selected_row = self.selected_row.saturating_add(data_height).min(self.query_data.len().saturating_sub(1));
+                }
                 self.ensure_cell_visible(data_height);
                 self.rebuild_json_tree();
                 true
             }
             KeyCode::Home => {
                 self.inspector_edit_col = None;
-                self.selected_row = 0;
+                if self.has_result_filter() {
+                    self.selected_row = self.result_filtered_indices[0];
+                } else {
+                    self.selected_row = 0;
+                }
                 self.ensure_cell_visible(data_height);
                 self.rebuild_json_tree();
                 true
             }
             KeyCode::End => {
                 self.inspector_edit_col = None;
-                self.selected_row = self.query_data.len().saturating_sub(1);
+                if self.has_result_filter() {
+                    self.selected_row = *self.result_filtered_indices.last().unwrap();
+                } else {
+                    self.selected_row = self.query_data.len().saturating_sub(1);
+                }
                 self.ensure_cell_visible(data_height);
                 self.rebuild_json_tree();
                 true
@@ -1517,6 +1560,117 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    fn handle_result_filter_key(&mut self, key: &KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('f') if key.modifiers == KeyModifiers::ALT => {
+                self.result_filter_active = false;
+                self.result_filter_input.clear();
+                self.result_filtered_indices.clear();
+                self.result_filter_highlights.clear();
+                self.set_status("Result filter: closed");
+                true
+            }
+            KeyCode::Esc => {
+                self.result_filter_active = false;
+                self.result_filter_input.clear();
+                self.result_filtered_indices.clear();
+                self.result_filter_highlights.clear();
+                true
+            }
+            KeyCode::Enter => {
+                self.result_filter_active = false;
+                self.set_status(if self.result_filtered_indices.is_empty() {
+                    "Result filter: accepted (no matches)".to_string()
+                } else {
+                    format!(
+                        "Result filter: {} / {} results",
+                        self.result_filtered_indices.len(),
+                        self.query_data.len()
+                    )
+                });
+                true
+            }
+            KeyCode::Backspace => {
+                if !self.result_filter_input.is_empty() && self.result_filter_cursor > 0 {
+                    let pos = self.result_filter_cursor.saturating_sub(1);
+                    self.result_filter_input.remove(pos);
+                    self.result_filter_cursor = pos;
+                    self.apply_result_filter();
+                }
+                true
+            }
+            KeyCode::Left => {
+                if self.result_filter_cursor > 0 {
+                    self.result_filter_cursor -= 1;
+                }
+                true
+            }
+            KeyCode::Right => {
+                if self.result_filter_cursor < self.result_filter_input.len() {
+                    self.result_filter_cursor += 1;
+                }
+                true
+            }
+            KeyCode::Home => {
+                self.result_filter_cursor = 0;
+                true
+            }
+            KeyCode::End => {
+                self.result_filter_cursor = self.result_filter_input.len();
+                true
+            }
+            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE
+                || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.result_filter_input.insert(self.result_filter_cursor, c);
+                self.result_filter_cursor += 1;
+                self.apply_result_filter();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn apply_result_filter(&mut self) {
+        if self.result_filter_input.is_empty() {
+            self.result_filtered_indices = (0..self.query_data.len()).collect();
+            self.result_filter_highlights.clear();
+            return;
+        }
+        self.result_filtered_indices = crate::search::result_filter::filter_results(
+            &self.result_filter_input,
+            &self.query_columns,
+            &self.query_data,
+        );
+        self.result_filter_highlights = crate::search::result_filter::compute_highlights(
+            &self.result_filter_input,
+            &self.query_data,
+            &self.result_filtered_indices,
+        );
+        if !self.result_filtered_indices.is_empty()
+            && !self.result_filtered_indices.contains(&self.selected_row)
+        {
+            self.selected_row = self.result_filtered_indices[0];
+        }
+    }
+
+    fn next_filtered_row(&self, direction: i32) -> Option<usize> {
+        if self.result_filtered_indices.is_empty() {
+            return None;
+        }
+        let current_pos = self
+            .result_filtered_indices
+            .iter()
+            .position(|&i| i == self.selected_row)?;
+        let new_pos = (current_pos as i32 + direction)
+            .clamp(0, self.result_filtered_indices.len() as i32 - 1) as usize;
+        Some(self.result_filtered_indices[new_pos])
+    }
+
+    fn has_result_filter(&self) -> bool {
+        !self.result_filter_input.is_empty()
     }
 
     fn handle_mongo_doc_key(&mut self, key: &KeyEvent) -> bool {
@@ -1957,7 +2111,7 @@ impl App {
         if self.focus == Focus::Inspector && self.current_page == Page::QueryEditor {
             if self.inspector_edit_col.is_some() {
                 self.key_hints =
-                    " Esc:Cancel | Enter:Save | Alt+Z:Undo | Alt+H:Inspector".to_string();
+                    " Esc:Cancel | Enter:Save | Alt+Z:Undo | Alt+H:Inspector | Alt+I:Editor".to_string();
                 return;
             }
             let is_json_cell = self
@@ -1973,12 +2127,18 @@ impl App {
                         .to_string();
             } else {
                 self.key_hints =
-                    " j/k:Scroll | g/G:Top/Bot | Click:Edit | Alt+Z:Undo | Alt+H:Inspector"
+                    " j/k:Scroll | g/G:Top/Bot | Click:Edit | Alt+Z:Undo | Alt+H:Inspector | Alt+I:Editor"
                         .to_string();
             }
+        } else if self.focus == Focus::Main
+            && self.current_page == Page::QueryEditor
+            && self.query_editor_focus == QueryEditorFocus::Results
+        {
+            self.key_hints =
+                " Ctrl+Q:Quit | j/k:Nav | Alt+H:Inspector | Alt+I:Editor | Alt+F:Filter".to_string();
         } else {
             self.key_hints =
-                " Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector".to_string();
+                " Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector | Alt-I:Editor".to_string();
         }
     }
 
@@ -2131,8 +2291,12 @@ impl App {
             return;
         }
 
-        if self.global_search.is_some() && self.global_search.as_ref().unwrap().is_open {
-            if crate::ui::search::handle_global_search_key(self, &key) {
+        if self.result_filter_active
+            && self.current_page == Page::QueryEditor
+            && self.focus == Focus::Main
+            && self.query_editor_focus == QueryEditorFocus::Results
+        {
+            if self.handle_result_filter_key(&key) {
                 return;
             }
         }
@@ -2221,13 +2385,6 @@ impl App {
                 self.set_status(format!("Focus: {:?}", self.focus));
             }
 
-            KeyCode::Char('f') if key.modifiers == KeyModifiers::ALT => {
-                let mut state = crate::ui::search::GlobalSearchState::new();
-                state.is_open = true;
-                self.global_search = Some(state);
-                crate::ui::search::rebuild_search_index(self);
-                self.set_status("Global Search — type to filter, Enter to jump, Esc to close");
-            }
             KeyCode::Char('h') if key.modifiers == KeyModifiers::ALT => {
                 self.show_inspector = !self.show_inspector;
                 self.inspector_scroll = 0;
@@ -2244,6 +2401,41 @@ impl App {
                 } else {
                     "Inspector: hidden"
                 });
+            }
+            KeyCode::Char('i') if key.modifiers == KeyModifiers::ALT => {
+                self.show_query_editor = !self.show_query_editor;
+                if !self.show_query_editor
+                    && self.query_editor_focus == QueryEditorFocus::Editor
+                {
+                    self.query_editor_focus = QueryEditorFocus::Results;
+                }
+                self.update_key_hints();
+                self.set_status(if self.show_query_editor {
+                    "Query Editor: shown"
+                } else {
+                    "Query Editor: hidden"
+                });
+            }
+            KeyCode::Char('f') if key.modifiers == KeyModifiers::ALT => {
+                if self.current_page == Page::QueryEditor
+                    && self.focus == Focus::Main
+                    && self.query_editor_focus == QueryEditorFocus::Results
+                {
+                    self.result_filter_active = !self.result_filter_active;
+                    if self.result_filter_active {
+                        if self.result_filter_input.is_empty() {
+                            self.result_filtered_indices = (0..self.query_data.len()).collect();
+                        }
+                        self.set_status(
+                            "Result filter — type to filter, Esc to clear, Enter to accept",
+                        );
+                    } else {
+                        self.result_filter_input.clear();
+                        self.result_filtered_indices.clear();
+                        self.result_filter_highlights.clear();
+                        self.set_status("Result filter: closed");
+                    }
+                }
             }
             _ => {}
         }
@@ -3009,8 +3201,14 @@ impl App {
             match self.focus {
                 Focus::Sidebar => {
                     self.focus = Focus::Main;
-                    self.query_editor_focus = QueryEditorFocus::Editor;
-                    self.enter_query_editor_normal_mode();
+                    self.query_editor_focus = if self.show_query_editor {
+                        QueryEditorFocus::Editor
+                    } else {
+                        QueryEditorFocus::Results
+                    };
+                    if self.show_query_editor {
+                        self.enter_query_editor_normal_mode();
+                    }
                 }
                 Focus::Main => match self.query_editor_focus {
                     QueryEditorFocus::Editor => {
@@ -3065,8 +3263,12 @@ impl App {
                 }
                 Focus::Main => match self.query_editor_focus {
                     QueryEditorFocus::Results => {
-                        self.query_editor_focus = QueryEditorFocus::Editor;
-                        self.enter_query_editor_normal_mode();
+                        if self.show_query_editor {
+                            self.query_editor_focus = QueryEditorFocus::Editor;
+                            self.enter_query_editor_normal_mode();
+                        } else {
+                            self.focus = Focus::Sidebar;
+                        }
                     }
                     QueryEditorFocus::Editor => {
                         self.focus = Focus::Sidebar;

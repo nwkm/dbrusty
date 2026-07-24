@@ -6,6 +6,7 @@ pub mod events;
 pub mod logging;
 pub mod models;
 pub mod providers;
+pub mod search;
 pub mod storage;
 pub mod syntax;
 pub mod ui;

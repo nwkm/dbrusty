@@ -51,10 +51,6 @@ pub fn render_layout(frame: &mut Frame, app: &mut App) {
     }
     render_footer(frame, footer_area, app);
 
-    if app.global_search.is_some() && app.global_search.as_ref().unwrap().is_open {
-        crate::ui::search::render_global_search(frame, area, app);
-    }
-
     if app.current_page == Page::QueryEditor && app.completion_state.visible {
         crate::completion::widget::render_autocomplete(frame, main_area, &app.completion_state);
     }

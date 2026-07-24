@@ -6,7 +6,7 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 
 ## Status
 
-**Current milestone: M14/29 — MariaDB provider fully implemented.** PostgreSQL, SQLite, MongoDB, MySQL, and MariaDB are all fully supported. SQL Server and Redis providers are defined but not yet implemented.
+**Current milestone: M15/29 — SQL Server provider.** PostgreSQL, SQLite, MongoDB, MySQL, and MariaDB are all fully supported. SQL Server and Redis providers are defined but not yet implemented.
 
 ## Features
 
@@ -38,14 +38,15 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 - Double-click table name to auto-generate and run `SELECT * FROM "table" LIMIT 1000 OFFSET 0`
 
 ### Query Editor
-- Split layout: editor (25%) / results (75%)
+- Split layout: editor (25%) / results (75%), toggleable with `Alt+I`
 - **Table double-click** in Explorer automatically generates and runs `SELECT * FROM "table" LIMIT 1000 OFFSET 0`
 - **Vi-style modal editing** with NORMAL and INSERT modes
 - NORMAL mode: `h`/`l` cursor movement, `w`/`b` word navigation, `dw`/`db` word deletion, `H`/`L` line start/end, `u`/`R` undo/redo, `Y` copy query to clipboard, `x`/`Backspace` char deletion
 - INSERT mode: standard text entry, `Esc`/`jj` to return to NORMAL, `Ctrl+R` to run query
 - Cursor shape changes: block `■` in NORMAL, vertical bar `|` in INSERT
-- Results display with column headers, row highlighting, and scrollable viewport
-- Cell selection with arrow keys / Tab
+- Result pane with column headers, row highlighting, and scrollable viewport
+- **Fuzzy search** in results (`Alt+F`): type-ahead filtering across all cell values with character-level match highlighting (yellow bold on matches)
+- Cell selection with arrow keys / j/k / Tab
 - Cell editing via popup dialog (Enter edit, Tab/Enter confirm, Esc cancel)
 - Copy cell value to clipboard (Y key)
 - Horizontal (Ctrl+B/F) and vertical (Ctrl+U/D) scrolling
@@ -74,14 +75,6 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 - Type badges on every field
 - Copy value to clipboard (Y)
 - Syntax-highlighted value display (strings green, numbers blue, dates blue, ObjectId red)
-
-### Global Search (Alt+F)
-- Fuzzy-matches across Explorer tree, table/column metadata, query text, and result cells
-- Color-coded source badges (Explorer=Cyan, Metadata=Yellow, Query=Green, Results=Magenta)
-- Consecutive-character and start-of-word scoring
-- Source-priority sorting (Results → Metadata → Explorer → Query → History)
-- Highlighted match characters in results
-- Keyboard navigation (Ctrl+N/P, PageUp/Down, Enter to jump, Esc to close)
 
 ### Pages
 | Key | Page | Status |
@@ -121,22 +114,9 @@ cargo run --release
 | `?` | Help |
 | `Tab` | Cycle focus forward |
 | `Shift+Tab` | Cycle focus reverse |
-| `Alt+F` | Global search (fuzzy-find across all panes) |
+| `Alt+F` | Result filter (fuzzy search in results pane) |
 | `Alt+H` | Toggle Inspector pane |
-
-### Global Search (Alt+F)
-
-| Key | Action |
-|-----|--------|
-| Type | Filter results by fuzzy match |
-| `Enter` | Jump to selected result |
-| `Esc` | Close search |
-| `Down` / `Ctrl+N` | Select next result |
-| `Up` / `Ctrl+P` | Select previous result |
-| `PageUp` | Scroll up one page |
-| `PageDown` | Scroll down one page |
-
-Searches across: Explorer tree items, table/column metadata, query editor lines, and query result cells. Results are color-coded by source.
+| `Alt+I` | Toggle Query Editor pane |
 
 ### Sidebar (Database Explorer)
 
@@ -193,10 +173,12 @@ Cursor indicates current mode: block `■` in NORMAL, vertical bar `|` in INSERT
 
 | Key | Action |
 |-----|--------|
+| `j` / `Down` | Navigate rows down |
+| `k` / `Up` | Navigate rows up |
 | `Right` / `Left` | Next / previous column |
-| `Up` / `Down` | Navigate rows |
 | `PageUp` / `PageDown` | Page up / down |
 | `Home` / `End` | First / last row |
+| `Alt+F` | Toggle fuzzy filter (type to filter, Esc clear, Enter accept) |
 | `Enter` | Edit selected cell |
 | `Y` / `y` | Copy cell value |
 | `Esc` | Clear selection / Focus editor |
@@ -205,6 +187,7 @@ Cursor indicates current mode: block `■` in NORMAL, vertical bar `|` in INSERT
 | `Ctrl+B` / `Ctrl+F` | Scroll results left/right |
 | `Ctrl+U` / `Ctrl+D` | Scroll results up/down |
 
+Fuzzy filter matches across all cell values with character-level highlighting (yellow bold). Active filter stays applied across queries; `Esc` clears, `Enter` accepts and exits edit mode, `Alt+F` toggles.
 
 ### Inspector Pane
 

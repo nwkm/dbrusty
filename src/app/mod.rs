@@ -2258,13 +2258,17 @@ impl App {
         if self.query_data.is_empty() || self.query_columns.is_empty() {
             return None;
         }
-        let combined_h = self.main_rect.height;
-        let results_area_y = self.main_rect.y + combined_h * 25 / 100;
+        let results_area_y = if self.show_query_editor {
+            self.main_rect.y + self.main_rect.height * 25 / 100
+        } else {
+            self.main_rect.y
+        };
         let inner_x = self.main_rect.x + 1;
         let inner_y = results_area_y + 1;
 
+        let filter_bar = if self.result_filter_active { 2 } else { 0 };
         let header_rows = 2u16;
-        let data_y = inner_y + header_rows;
+        let data_y = inner_y + filter_bar + header_rows;
 
         if mouse_row < data_y {
             return None;
@@ -2875,8 +2879,11 @@ impl App {
                     }
                 } else if self.current_page == Page::QueryEditor {
                     let is_double = self.is_double_click(col, row);
-                    let combined_h = self.main_rect.height;
-                    let editor_bottom = self.main_rect.y + combined_h * 25 / 100;
+                    let editor_bottom = if self.show_query_editor {
+                        self.main_rect.y + self.main_rect.height * 25 / 100
+                    } else {
+                        self.main_rect.y
+                    };
                     let inspector_left = self.main_rect.x + self.main_rect.width;
 
                     if col >= inspector_left {

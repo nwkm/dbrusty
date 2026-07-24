@@ -1464,7 +1464,7 @@ impl App {
                 self.rebuild_json_tree();
                 true
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.inspector_edit_col = None;
                 if self.has_result_filter() {
                     if let Some(next) = self.next_filtered_row(1) {
@@ -1477,7 +1477,7 @@ impl App {
                 self.rebuild_json_tree();
                 true
             }
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.inspector_edit_col = None;
                 if self.has_result_filter() {
                     if let Some(next) = self.next_filtered_row(-1) {
@@ -2220,7 +2220,19 @@ impl App {
     }
 
     fn ensure_cell_visible(&mut self, data_height: usize) {
-        if self.selected_row >= self.result_scroll_v + data_height {
+        if self.has_result_filter() {
+            if let Some(pos) = self
+                .result_filtered_indices
+                .iter()
+                .position(|&i| i == self.selected_row)
+            {
+                if pos >= self.result_scroll_v + data_height {
+                    self.result_scroll_v = pos.saturating_sub(data_height) + 1;
+                } else if pos < self.result_scroll_v {
+                    self.result_scroll_v = pos;
+                }
+            }
+        } else if self.selected_row >= self.result_scroll_v + data_height {
             self.result_scroll_v = self.selected_row.saturating_sub(data_height) + 1;
         } else if self.selected_row < self.result_scroll_v {
             self.result_scroll_v = self.selected_row;
@@ -2259,10 +2271,19 @@ impl App {
         }
 
         let row_offset = (mouse_row - data_y) as usize;
-        let data_row = self.result_scroll_v + row_offset;
-        if data_row >= self.query_data.len() {
-            return None;
-        }
+        let data_row = if self.has_result_filter() && !self.result_filtered_indices.is_empty() {
+            let visible_pos = self.result_scroll_v + row_offset;
+            if visible_pos >= self.result_filtered_indices.len() {
+                return None;
+            }
+            self.result_filtered_indices[visible_pos]
+        } else {
+            let r = self.result_scroll_v + row_offset;
+            if r >= self.query_data.len() {
+                return None;
+            }
+            r
+        };
 
         let mut char_x: i16 = inner_x as i16;
         for (ci, &w) in self.query_col_widths.iter().enumerate() {

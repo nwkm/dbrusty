@@ -1,12 +1,17 @@
 # DBRUSTY
 
+[![Built with Ratatui](https://img.shields.io/badge/built_with-Ratatui-red.svg)](https://ratatui.rs)
+[![Crate](https://img.shields.io/crates/v/dbrusty.svg)](https://crates.io/crates/dbrusty)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/nawin/dbrusty)](https://github.com/nawin/dbrusty/releases)
+
 A production-quality keyboard-driven terminal database client built with Rust and Ratatui.
 
 Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extensibility, and a seamless terminal-native workflow.
 
 ## Status
 
-**Current milestone: M15/29 — SQL Server provider.** PostgreSQL, SQLite, MongoDB, MySQL, and MariaDB are all fully supported. SQL Server and Redis providers are defined but not yet implemented.
+**Current milestone: M15/29 — SQL Server provider.** PostgreSQL, SQLite, MongoDB, MySQL, MariaDB, and Redis are all fully supported. SQL Server is defined but not yet implemented.
 
 ## Features
 
@@ -28,7 +33,7 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 | MySQL | Full support (connect/ping, metadata queries, CRUD, transactions, server info) |
 | MariaDB | Full support (connect/ping, metadata queries, CRUD, transactions, server info, sequences, custom types) |
 | SQL Server | Not yet implemented |
-| Redis | Not yet implemented |
+| Redis | Full support (key browser by type, lazy-loaded via SCAN, TTL display, raw command execution, GET/HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE/INFO parsing, connections page + explorer tree integration) |
 
 ### Database Explorer
 - Tree view: Server → Databases → Schemas → Tables/Views/Indexes/Functions/Procedures/Triggers/Sequences
@@ -334,7 +339,7 @@ cargo fmt --check
 | M13 | MySQL provider | Connect/ping, metadata queries (tables, columns, indexes, views, triggers, functions, procedures), CRUD, transactions, cancel query, server info | ✓ |
 | M14 | MariaDB provider | Connect/ping, metadata queries (tables, columns, indexes, views, triggers, functions, procedures, sequences, custom types), CRUD, transactions, cancel query, server info | ✓ |
 | M15 | SQL Server provider | Connect/ping, metadata queries, CRUD, transactions | |
-| M16 | Redis provider | Key browser, TTL, streams, hashes, sets, lists, sorted sets, pub/sub | |
+| M16 | Redis provider | Key browser, TTL, streams, hashes, sets, lists, sorted sets, pub/sub | ✓ |
 | M17 | Schema management | CREATE/ALTER/DROP/RENAME tables, generate DDL, reverse engineer schema, schema diff | |
 | M18 | Import / Export | CSV, JSON, SQL, Excel, Parquet, XML, YAML, compressed export | |
 | M19 | Query history | History log, pinned queries, folders, tags, search, favorite, import/export | |

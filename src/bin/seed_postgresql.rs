@@ -16,10 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("Connecting to: {}", uri);
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(uri)
-        .await?;
+    let pool = PgPoolOptions::new().max_connections(5).connect(uri).await?;
 
     let start = Instant::now();
     create_tables(&pool).await?;
@@ -153,21 +150,61 @@ async fn create_tables(pool: &PgPool) -> Result<(), sqlx::Error> {
 
 fn random_name(rng: &mut impl Rng) -> String {
     let first = [
-        "Alice", "Bob", "Charlie", "Diana", "Edward", "Fiona", "George", "Hannah", "Ivan",
-        "Julia", "Kevin", "Laura", "Michael", "Nina", "Oscar", "Patricia", "Quinn", "Rachel",
-        "Samuel", "Tina", "Uma", "Victor", "Wendy", "Xavier", "Yara", "Zach", "Aiden",
-        "Bella", "Carter", "Daisy", "Ethan", "Freya", "Gavin", "Hazel", "Isaac", "Jade",
-        "Kai", "Luna", "Mason", "Nora", "Owen", "Piper", "Riley", "Sage", "Theo",
-        "Violet", "Wyatt", "Zoe", "Amir", "Blake", "Cora", "Dean", "Eliza", "Finn",
-        "Gemma", "Hugo", "Iris", "Jasper", "Kira", "Leo", "Maya", "Nash", "Olive",
+        "Alice", "Bob", "Charlie", "Diana", "Edward", "Fiona", "George", "Hannah", "Ivan", "Julia",
+        "Kevin", "Laura", "Michael", "Nina", "Oscar", "Patricia", "Quinn", "Rachel", "Samuel",
+        "Tina", "Uma", "Victor", "Wendy", "Xavier", "Yara", "Zach", "Aiden", "Bella", "Carter",
+        "Daisy", "Ethan", "Freya", "Gavin", "Hazel", "Isaac", "Jade", "Kai", "Luna", "Mason",
+        "Nora", "Owen", "Piper", "Riley", "Sage", "Theo", "Violet", "Wyatt", "Zoe", "Amir",
+        "Blake", "Cora", "Dean", "Eliza", "Finn", "Gemma", "Hugo", "Iris", "Jasper", "Kira", "Leo",
+        "Maya", "Nash", "Olive",
     ];
     let last = [
-        "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis",
-        "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson",
-        "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson",
-        "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson", "Walker",
-        "Young", "Allen", "King", "Wright", "Scott", "Torres", "Nguyen", "Hill",
-        "Adams", "Baker", "Green", "Campbell", "Mitchell", "Carter", "Roberts",
+        "Smith",
+        "Johnson",
+        "Williams",
+        "Brown",
+        "Jones",
+        "Garcia",
+        "Miller",
+        "Davis",
+        "Rodriguez",
+        "Martinez",
+        "Hernandez",
+        "Lopez",
+        "Gonzalez",
+        "Wilson",
+        "Anderson",
+        "Thomas",
+        "Taylor",
+        "Moore",
+        "Jackson",
+        "Martin",
+        "Lee",
+        "Perez",
+        "Thompson",
+        "White",
+        "Harris",
+        "Sanchez",
+        "Clark",
+        "Ramirez",
+        "Lewis",
+        "Robinson",
+        "Walker",
+        "Young",
+        "Allen",
+        "King",
+        "Wright",
+        "Scott",
+        "Torres",
+        "Nguyen",
+        "Hill",
+        "Adams",
+        "Baker",
+        "Green",
+        "Campbell",
+        "Mitchell",
+        "Carter",
+        "Roberts",
     ];
     format!(
         "{} {}",
@@ -178,7 +215,11 @@ fn random_name(rng: &mut impl Rng) -> String {
 
 fn random_email(rng: &mut impl Rng, name: &str) -> String {
     let domains = [
-        "example.com", "test.org", "demo.net", "mail.com", "inbox.co",
+        "example.com",
+        "test.org",
+        "demo.net",
+        "mail.com",
+        "inbox.co",
     ];
     let base = name.to_lowercase().replace(' ', ".");
     format!(
@@ -191,13 +232,67 @@ fn random_email(rng: &mut impl Rng, name: &str) -> String {
 
 fn random_sentence(rng: &mut impl Rng, min_words: usize, max_words: usize) -> String {
     let words = [
-        "lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing", "elit", "sed",
-        "do", "eiusmod", "tempor", "incididunt", "ut", "labore", "et", "dolore", "magna",
-        "aliqua", "enim", "ad", "minim", "veniam", "quis", "nostrud", "exercitation", "ullamco",
-        "laboris", "nisi", "aliquip", "ex", "ea", "commodo", "consequat", "duis", "aute",
-        "irure", "reprehenderit", "voluptate", "velit", "esse", "cillum", "fugiat", "nulla",
-        "pariatur", "excepteur", "sint", "occaecat", "cupidatat", "non", "proident", "sunt",
-        "culpa", "qui", "officia", "deserunt", "mollit", "anim", "id", "est", "laborum",
+        "lorem",
+        "ipsum",
+        "dolor",
+        "sit",
+        "amet",
+        "consectetur",
+        "adipiscing",
+        "elit",
+        "sed",
+        "do",
+        "eiusmod",
+        "tempor",
+        "incididunt",
+        "ut",
+        "labore",
+        "et",
+        "dolore",
+        "magna",
+        "aliqua",
+        "enim",
+        "ad",
+        "minim",
+        "veniam",
+        "quis",
+        "nostrud",
+        "exercitation",
+        "ullamco",
+        "laboris",
+        "nisi",
+        "aliquip",
+        "ex",
+        "ea",
+        "commodo",
+        "consequat",
+        "duis",
+        "aute",
+        "irure",
+        "reprehenderit",
+        "voluptate",
+        "velit",
+        "esse",
+        "cillum",
+        "fugiat",
+        "nulla",
+        "pariatur",
+        "excepteur",
+        "sint",
+        "occaecat",
+        "cupidatat",
+        "non",
+        "proident",
+        "sunt",
+        "culpa",
+        "qui",
+        "officia",
+        "deserunt",
+        "mollit",
+        "anim",
+        "id",
+        "est",
+        "laborum",
     ];
     let count = rng.random_range(min_words..=max_words);
     let mut s = String::new();
@@ -213,17 +308,34 @@ fn random_sentence(rng: &mut impl Rng, min_words: usize, max_words: usize) -> St
 
 fn random_city(rng: &mut impl Rng) -> String {
     let cities = [
-        "New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia",
-        "San Antonio", "San Diego", "Dallas", "Austin", "Portland", "Seattle", "Denver",
-        "Boston", "Miami", "Atlanta", "Minneapolis", "Tampa", "Orlando", "Detroit",
+        "New York",
+        "Los Angeles",
+        "Chicago",
+        "Houston",
+        "Phoenix",
+        "Philadelphia",
+        "San Antonio",
+        "San Diego",
+        "Dallas",
+        "Austin",
+        "Portland",
+        "Seattle",
+        "Denver",
+        "Boston",
+        "Miami",
+        "Atlanta",
+        "Minneapolis",
+        "Tampa",
+        "Orlando",
+        "Detroit",
     ];
     cities[rng.random_range(0..cities.len())].to_string()
 }
 
 fn random_state(rng: &mut impl Rng) -> String {
     let states = [
-        "NY", "CA", "IL", "TX", "AZ", "PA", "FL", "OH", "GA", "NC", "MI", "WA", "CO",
-        "MA", "OR", "MN", "TN", "IN", "MO", "WI",
+        "NY", "CA", "IL", "TX", "AZ", "PA", "FL", "OH", "GA", "NC", "MI", "WA", "CO", "MA", "OR",
+        "MN", "TN", "IN", "MO", "WI",
     ];
     states[rng.random_range(0..states.len())].to_string()
 }
@@ -235,13 +347,19 @@ fn random_zip(rng: &mut impl Rng) -> String {
 // ── Category data ──────────────────────────────────────────────────
 
 const CATEGORIES: &[(&str, &str)] = &[
-    ("Electronics", "Devices, gadgets, and electronic accessories"),
+    (
+        "Electronics",
+        "Devices, gadgets, and electronic accessories",
+    ),
     ("Clothing", "Apparel, footwear, and fashion accessories"),
     ("Books", "Fiction, non-fiction, and educational materials"),
     ("Home & Garden", "Furniture, decor, and gardening supplies"),
     ("Sports", "Equipment, apparel, and gear for sports"),
     ("Food & Beverage", "Groceries, snacks, and beverages"),
-    ("Health & Beauty", "Skincare, cosmetics, and wellness products"),
+    (
+        "Health & Beauty",
+        "Skincare, cosmetics, and wellness products",
+    ),
     ("Toys", "Games, puzzles, and children's toys"),
     ("Automotive", "Car parts, accessories, and maintenance"),
     ("Office", "Stationery, furniture, and office supplies"),
@@ -324,10 +442,20 @@ async fn seed_products(pool: &PgPool) -> Result<usize, sqlx::Error> {
 
         for _ in 0..batch_size {
             let product_types = [
-                "Widget", "Gadget", "Tool", "Device", "Accessory", "Component", "Kit",
-                "Module", "Instrument", "Appliance",
+                "Widget",
+                "Gadget",
+                "Tool",
+                "Device",
+                "Accessory",
+                "Component",
+                "Kit",
+                "Module",
+                "Instrument",
+                "Appliance",
             ];
-            let adj = ["Pro", "Max", "Mini", "Ultra", "Lite", "Plus", "Elite", "Basic"];
+            let adj = [
+                "Pro", "Max", "Mini", "Ultra", "Lite", "Plus", "Elite", "Basic",
+            ];
             names.push(format!(
                 "{} {}-{}",
                 product_types[rng.random_range(0..product_types.len())],
@@ -542,8 +670,19 @@ async fn seed_events(pool: &PgPool) -> Result<usize, sqlx::Error> {
     let mut rng = rand::rng();
 
     let types = [
-        "page_view", "login", "logout", "purchase", "signup", "search", "click",
-        "scroll", "form_submit", "error", "api_call", "download", "upload",
+        "page_view",
+        "login",
+        "logout",
+        "purchase",
+        "signup",
+        "search",
+        "click",
+        "scroll",
+        "form_submit",
+        "error",
+        "api_call",
+        "download",
+        "upload",
     ];
 
     for chunk in 0..(count + BATCH_SIZE - 1) / BATCH_SIZE {
@@ -560,13 +699,11 @@ async fn seed_events(pool: &PgPool) -> Result<usize, sqlx::Error> {
                 "referrer": "https://example.com",
             });
 
-            sqlx::query(
-                "INSERT INTO seed_events (event_type, payload) VALUES ($1, $2)",
-            )
-            .bind(event_type)
-            .bind(payload)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query("INSERT INTO seed_events (event_type, payload) VALUES ($1, $2)")
+                .bind(event_type)
+                .bind(payload)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
     }
@@ -600,20 +737,24 @@ async fn seed_logs(pool: &PgPool) -> Result<usize, sqlx::Error> {
             let level = levels[rng.random_range(0..levels.len())];
             let source = sources[rng.random_range(0..sources.len())];
             let message = match level {
-                "ERROR" => format!("Failed to process request: {}", random_sentence(&mut rng, 3, 8)),
-                "WARN" => format!("Degraded performance detected: {}", random_sentence(&mut rng, 3, 8)),
+                "ERROR" => format!(
+                    "Failed to process request: {}",
+                    random_sentence(&mut rng, 3, 8)
+                ),
+                "WARN" => format!(
+                    "Degraded performance detected: {}",
+                    random_sentence(&mut rng, 3, 8)
+                ),
                 "INFO" => format!("Request completed: {}", random_sentence(&mut rng, 3, 8)),
                 _ => format!("Debug: {}", random_sentence(&mut rng, 2, 6)),
             };
 
-            sqlx::query(
-                "INSERT INTO seed_logs (level, message, source) VALUES ($1, $2, $3)",
-            )
-            .bind(level)
-            .bind(&message)
-            .bind(source)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query("INSERT INTO seed_logs (level, message, source) VALUES ($1, $2, $3)")
+                .bind(level)
+                .bind(&message)
+                .bind(source)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
     }
@@ -625,12 +766,14 @@ async fn seed_audit_trail(pool: &PgPool) -> Result<usize, sqlx::Error> {
     println!("  Seeding {} seed_audit_trail ...", count);
     let mut rng = rand::rng();
 
-    let tables = [
-        "seed_users", "seed_products", "seed_orders", "seed_reviews",
-    ];
+    let tables = ["seed_users", "seed_products", "seed_orders", "seed_reviews"];
     let operations = ["INSERT", "UPDATE", "DELETE"];
     let users = [
-        "admin", "app_user", "migration_bot", "analytics_svc", "sync_worker",
+        "admin",
+        "app_user",
+        "migration_bot",
+        "analytics_svc",
+        "sync_worker",
     ];
 
     for chunk in 0..(count + BATCH_SIZE - 1) / BATCH_SIZE {
@@ -683,10 +826,22 @@ async fn seed_addresses(pool: &PgPool) -> Result<usize, sqlx::Error> {
             let user_id = rng.random_range(1..=100);
             let street_num = rng.random_range(100..9999);
             let street_names = [
-                "Main St", "Oak Ave", "Elm St", "Maple Dr", "Pine Ln", "Cedar Ct",
-                "Birch Rd", "Walnut Way", "Cherry Blvd", "Willow Ln",
+                "Main St",
+                "Oak Ave",
+                "Elm St",
+                "Maple Dr",
+                "Pine Ln",
+                "Cedar Ct",
+                "Birch Rd",
+                "Walnut Way",
+                "Cherry Blvd",
+                "Willow Ln",
             ];
-            let street = format!("{} {}", street_num, street_names[rng.random_range(0..street_names.len())]);
+            let street = format!(
+                "{} {}",
+                street_num,
+                street_names[rng.random_range(0..street_names.len())]
+            );
             let city = random_city(&mut rng);
             let state = random_state(&mut rng);
             let zip = random_zip(&mut rng);

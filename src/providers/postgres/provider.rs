@@ -110,11 +110,11 @@ impl DatabaseProvider for PostgresProvider {
                     match crate::storage::credentials::get_password(&config.password_key()) {
                         Ok(Some(p)) => p,
                         Ok(None) => {
-                            tracing::warn!("No password found in keychain for {}", config.name);
+                            tracing::debug!("No password found in keychain for {}", config.name);
                             String::new()
                         }
                         Err(e) => {
-                            tracing::warn!("Keychain error for {}: {}", config.name, e);
+                            tracing::debug!("Keychain error for {}: {}", config.name, e);
                             String::new()
                         }
                     }

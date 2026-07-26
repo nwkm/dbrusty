@@ -310,11 +310,11 @@ impl DatabaseProvider for MongoProvider {
                     match crate::storage::credentials::get_password(&config.password_key()) {
                         Ok(Some(p)) => p,
                         Ok(None) => {
-                            tracing::warn!("No password found in keychain for {}", config.name);
+                            tracing::debug!("No password found in keychain for {}", config.name);
                             String::new()
                         }
                         Err(e) => {
-                            tracing::warn!("Keychain error for {}: {}", config.name, e);
+                            tracing::debug!("Keychain error for {}: {}", config.name, e);
                             String::new()
                         }
                     }
@@ -351,18 +351,17 @@ impl DatabaseProvider for MongoProvider {
         // Verify the connection is real — Client::with_uri_str is lazy
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
-                client
+            client
                 .database(&database_name)
                 .run_command(bson::doc! { "ping": 1 }),
         )
         .await
-        .map_err(|_| DatabaseError::Connection(
-            "Connection timed out — no MongoDB server is reachable".to_string(),
-        ))?
-        .map_err(|e| DatabaseError::Connection(format!(
-            "Server unreachable: {}",
-            e
-        )))?;
+        .map_err(|_| {
+            DatabaseError::Connection(
+                "Connection timed out — no MongoDB server is reachable".to_string(),
+            )
+        })?
+        .map_err(|e| DatabaseError::Connection(format!("Server unreachable: {}", e)))?;
 
         self.client = Some(client);
         self.database_name = database_name;

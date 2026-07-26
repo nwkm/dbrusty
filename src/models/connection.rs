@@ -142,10 +142,18 @@ impl ConnectionConfig {
             }
             DatabaseType::Redis => {
                 let pw = password.unwrap_or("");
-                if pw.is_empty() {
-                    Ok(format!("redis://{}:{}/0", self.host, self.port))
+                let db = if self.database.is_empty() {
+                    "0".to_string()
                 } else {
-                    Ok(format!("redis://:{}@{}:{}/0", pw, self.host, self.port))
+                    self.database.clone()
+                };
+                if pw.is_empty() {
+                    Ok(format!("redis://{}:{}/{}", self.host, self.port, db))
+                } else {
+                    Ok(format!(
+                        "redis://:{}@{}:{}/{}",
+                        pw, self.host, self.port, db
+                    ))
                 }
             }
         }

@@ -69,10 +69,7 @@ fn value_from_row(row: &MySqlRow, idx: usize) -> Value {
             row.try_get::<chrono::NaiveTime, _>(idx)
                 .map(|t| Value::Text(t.format("%H:%M:%S").to_string()))
         })
-        .or_else(|_| {
-            row.try_get::<String, _>(idx)
-                .map(Value::Text)
-        })
+        .or_else(|_| row.try_get::<String, _>(idx).map(Value::Text))
         .or_else(|_| {
             row.try_get::<serde_json::Value, _>(idx)
                 .map(|v| Value::Json(v.to_string()))
@@ -134,11 +131,11 @@ impl DatabaseProvider for MysqlProvider {
                     match crate::storage::credentials::get_password(&config.password_key()) {
                         Ok(Some(p)) => p,
                         Ok(None) => {
-                            tracing::warn!("No password found in keychain for {}", config.name);
+                            tracing::debug!("No password found in keychain for {}", config.name);
                             String::new()
                         }
                         Err(e) => {
-                            tracing::warn!("Keychain error for {}: {}", config.name, e);
+                            tracing::debug!("Keychain error for {}: {}", config.name, e);
                             String::new()
                         }
                     }
@@ -347,12 +344,14 @@ impl DatabaseProvider for MysqlProvider {
         let mut index_map: std::collections::BTreeMap<String, (bool, Vec<String>, bool)> =
             std::collections::BTreeMap::new();
         for r in &rows {
-                    let idx_name = col_str(&r, "index_name");
-                    let col_name = col_str(&r, "column_name");
-                    let non_unique: bool = r.get("non_unique");
-                    let is_primary: bool = r.get("is_primary");
+            let idx_name = col_str(&r, "index_name");
+            let col_name = col_str(&r, "column_name");
+            let non_unique: bool = r.get("non_unique");
+            let is_primary: bool = r.get("is_primary");
 
-            let entry = index_map.entry(idx_name).or_insert((non_unique, Vec::new(), is_primary));
+            let entry = index_map
+                .entry(idx_name)
+                .or_insert((non_unique, Vec::new(), is_primary));
             entry.1.push(col_name);
             entry.0 = non_unique;
             entry.2 = is_primary;

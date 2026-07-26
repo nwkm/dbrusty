@@ -131,11 +131,11 @@ impl DatabaseProvider for MariadbProvider {
                     match crate::storage::credentials::get_password(&config.password_key()) {
                         Ok(Some(p)) => p,
                         Ok(None) => {
-                            tracing::warn!("No password found in keychain for {}", config.name);
+                            tracing::debug!("No password found in keychain for {}", config.name);
                             String::new()
                         }
                         Err(e) => {
-                            tracing::warn!("Keychain error for {}: {}", config.name, e);
+                            tracing::debug!("Keychain error for {}: {}", config.name, e);
                             String::new()
                         }
                     }
@@ -410,7 +410,7 @@ impl DatabaseProvider for MariadbProvider {
                 let sequences = r
                     .iter()
                     .map(|r| {
-                let name = col_str(&r, "name");
+                        let name = col_str(&r, "name");
                         SequenceInfo {
                             name,
                             schema: schema.to_string(),
@@ -517,7 +517,7 @@ impl DatabaseProvider for MariadbProvider {
         let procedures = rows
             .iter()
             .map(|r| {
-                        let name = col_str(&r, "name");
+                let name = col_str(&r, "name");
                 ProcedureInfo {
                     name,
                     params: Vec::new(),

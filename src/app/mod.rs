@@ -19,6 +19,7 @@ pub enum CellEditFocus {
     Confirm,
 }
 
+use crate::completion::CompletionState;
 use crate::config::AppConfig;
 use crate::database::metadata::MetadataCache;
 use crate::database::pool::ConnectionPool;
@@ -30,14 +31,14 @@ use crate::providers::mariadb::MariadbProvider;
 use crate::providers::mongodb::MongoProvider;
 use crate::providers::mysql::MysqlProvider;
 use crate::providers::postgres::PostgresProvider;
+use crate::providers::redis::RedisProvider;
 use crate::providers::sqlite::SqliteProvider;
 use crate::storage;
 use crate::ui;
 use crate::widgets::input::InputField;
-use crate::completion::CompletionState;
-use ratatui_textarea::TextArea;
 use crate::widgets::mongo_doc_list::MongoDocListState;
 use crate::widgets::tree::TreeState;
+use ratatui_textarea::TextArea;
 
 enum BackgroundEvent {
     Connected {
@@ -278,6 +279,7 @@ pub struct App {
     pub key_hints: String,
     pub pool: ConnectionPool,
     pub connections: Vec<ConnectionConfig>,
+    pub active_db_type_cache: Option<DatabaseType>,
     pub conn_list_selected: usize,
     pub conn_list_scroll: usize,
     pub conn_page_mode: ConnPageMode,
@@ -375,6 +377,7 @@ impl App {
                 .find(|c| c.id == id)
                 .map(|c| c.db_type.clone())
         })
+        .or(self.active_db_type_cache.clone())
     }
 
     pub fn is_mongo_query(&self) -> bool {
@@ -442,9 +445,12 @@ impl App {
             input_mode: InputMode::Normal,
             focus: Focus::Main,
             status_message: String::new(),
-            key_hints: String::from(" Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector | Alt-I:Editor"),
+            key_hints: String::from(
+                " Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector | Alt-I:Editor",
+            ),
             pool: ConnectionPool::new(),
             connections,
+            active_db_type_cache: None,
             conn_list_selected: 0,
             conn_list_scroll: 0,
             conn_page_mode: ConnPageMode::Browse,
@@ -553,6 +559,7 @@ impl App {
             DatabaseType::MySQL => Box::new(MysqlProvider::new()),
             DatabaseType::MariaDB => Box::new(MariadbProvider::new()),
             DatabaseType::MongoDB => Box::new(MongoProvider::new()),
+            DatabaseType::Redis => Box::new(RedisProvider::new()),
             _ => {
                 self.set_status(format!(
                     "\"{}\" is {} (not yet supported).",
@@ -710,6 +717,7 @@ impl App {
                         self.set_status(format!("Error disconnecting: {}", e));
                     } else {
                         self.pool.unregister(id);
+                        self.active_db_type_cache = None;
                         self.explorer_tree = TreeState::new(Vec::new());
                         self.query_text.clear();
                         self.query_editor = TextArea::default();
@@ -746,6 +754,11 @@ impl App {
                 } => {
                     self.pool.register(id, provider);
                     self.pool.set_active(id);
+                    self.active_db_type_cache = self
+                        .connections
+                        .iter()
+                        .find(|c| c.id == id)
+                        .map(|c| c.db_type.clone());
                     self.query_text.clear();
                     self.query_editor = TextArea::default();
 
@@ -767,11 +780,7 @@ impl App {
                     );
 
                     // Update last_connected and persist
-                    if let Some(saved) = self
-                        .connections
-                        .iter_mut()
-                        .find(|c| c.id == id)
-                    {
+                    if let Some(saved) = self.connections.iter_mut().find(|c| c.id == id) {
                         saved.last_connected = Some(chrono::Utc::now());
                         let _ = storage::connections::save_connections(&self.connections);
                     }
@@ -800,9 +809,7 @@ impl App {
                             let header_len = col.name.len();
                             let max_data = result.rows[..sample_size]
                                 .iter()
-                                .map(|row| {
-                                    row.get(ci).map(|v| v.to_string().len()).unwrap_or(0)
-                                })
+                                .map(|row| row.get(ci).map(|v| v.to_string().len()).unwrap_or(0))
                                 .max()
                                 .unwrap_or(0);
                             header_len.max(max_data)
@@ -872,10 +879,7 @@ impl App {
                                 }
                                 output.push('\n');
                             }
-                            output.push_str(&format!(
-                                "{} rows affected",
-                                result.rows_affected
-                            ));
+                            output.push_str(&format!("{} rows affected", result.rows_affected));
                             output.push('\n');
                             self.query_results = output;
                             self.query_columns.clear();
@@ -926,6 +930,7 @@ impl App {
             DatabaseType::MySQL => Box::new(MysqlProvider::new()),
             DatabaseType::MariaDB => Box::new(MariadbProvider::new()),
             DatabaseType::MongoDB => Box::new(MongoProvider::new()),
+            DatabaseType::Redis => Box::new(RedisProvider::new()),
             _ => {
                 self.set_status(format!(
                     "\"{}\" is {} (not yet supported).",
@@ -1006,11 +1011,24 @@ impl App {
         if let Some(provider) = self.pool.get_active() {
             match provider.get_columns(table).await {
                 Ok(columns) => {
-                    self.metadata_cache.set_columns(table.to_string(), columns);
-                    self.set_status(format!("Loaded columns for \"{}\"", table));
+                    self.metadata_cache
+                        .set_columns(table.to_string(), columns.clone());
+                    let tree_id = format!("table:{}", table);
+                    let child_items: Vec<crate::widgets::tree::TreeItem> = columns
+                        .iter()
+                        .map(|c| {
+                            crate::widgets::tree::TreeItem::leaf(
+                                &format!("column:{}.{}", table, c.name),
+                                &c.name,
+                                4,
+                            )
+                        })
+                        .collect();
+                    self.explorer_tree.set_children(&tree_id, child_items);
+                    self.set_status(format!("Loaded {} items for \"{}\"", columns.len(), table));
                 }
                 Err(e) => {
-                    self.set_status(format!("Failed to load columns: {}", e));
+                    self.set_status(format!("Failed to load items: {}", e));
                 }
             }
         }
@@ -1255,27 +1273,33 @@ impl App {
                 }
                 KeyCode::Left => {
                     self.pending_j = false;
-                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Back);
+                    self.query_editor
+                        .move_cursor(ratatui_textarea::CursorMove::Back);
                 }
                 KeyCode::Right => {
                     self.pending_j = false;
-                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Forward);
+                    self.query_editor
+                        .move_cursor(ratatui_textarea::CursorMove::Forward);
                 }
                 KeyCode::Up => {
                     self.pending_j = false;
-                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Up);
+                    self.query_editor
+                        .move_cursor(ratatui_textarea::CursorMove::Up);
                 }
                 KeyCode::Down => {
                     self.pending_j = false;
-                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Down);
+                    self.query_editor
+                        .move_cursor(ratatui_textarea::CursorMove::Down);
                 }
                 KeyCode::Home => {
                     self.pending_j = false;
-                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::Head);
+                    self.query_editor
+                        .move_cursor(ratatui_textarea::CursorMove::Head);
                 }
                 KeyCode::End => {
                     self.pending_j = false;
-                    self.query_editor.move_cursor(ratatui_textarea::CursorMove::End);
+                    self.query_editor
+                        .move_cursor(ratatui_textarea::CursorMove::End);
                 }
                 _ => {
                     if self.pending_j {
@@ -1311,28 +1335,36 @@ impl App {
                 self.apply_cursor_style();
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Back);
+                self.query_editor
+                    .move_cursor(ratatui_textarea::CursorMove::Back);
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Forward);
+                self.query_editor
+                    .move_cursor(ratatui_textarea::CursorMove::Forward);
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Down);
+                self.query_editor
+                    .move_cursor(ratatui_textarea::CursorMove::Down);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Up);
+                self.query_editor
+                    .move_cursor(ratatui_textarea::CursorMove::Up);
             }
             KeyCode::Char('H') => {
-                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Head);
+                self.query_editor
+                    .move_cursor(ratatui_textarea::CursorMove::Head);
             }
             KeyCode::Char('L') => {
-                self.query_editor.move_cursor(ratatui_textarea::CursorMove::End);
+                self.query_editor
+                    .move_cursor(ratatui_textarea::CursorMove::End);
             }
             KeyCode::Char('w') => {
-                self.query_editor.move_cursor(ratatui_textarea::CursorMove::WordForward);
+                self.query_editor
+                    .move_cursor(ratatui_textarea::CursorMove::WordForward);
             }
             KeyCode::Char('b') => {
-                self.query_editor.move_cursor(ratatui_textarea::CursorMove::WordBack);
+                self.query_editor
+                    .move_cursor(ratatui_textarea::CursorMove::WordBack);
             }
             KeyCode::Char('d') => {
                 self.pending_d = true;
@@ -1493,7 +1525,11 @@ impl App {
             KeyCode::PageUp => {
                 self.inspector_edit_col = None;
                 if self.has_result_filter() {
-                    let cur_pos = self.result_filtered_indices.iter().position(|&i| i == self.selected_row).unwrap_or(0);
+                    let cur_pos = self
+                        .result_filtered_indices
+                        .iter()
+                        .position(|&i| i == self.selected_row)
+                        .unwrap_or(0);
                     let new_pos = cur_pos.saturating_sub(data_height);
                     self.selected_row = self.result_filtered_indices[new_pos];
                 } else {
@@ -1506,11 +1542,19 @@ impl App {
             KeyCode::PageDown => {
                 self.inspector_edit_col = None;
                 if self.has_result_filter() {
-                    let cur_pos = self.result_filtered_indices.iter().position(|&i| i == self.selected_row).unwrap_or(0);
-                    let new_pos = (cur_pos + data_height).min(self.result_filtered_indices.len().saturating_sub(1));
+                    let cur_pos = self
+                        .result_filtered_indices
+                        .iter()
+                        .position(|&i| i == self.selected_row)
+                        .unwrap_or(0);
+                    let new_pos = (cur_pos + data_height)
+                        .min(self.result_filtered_indices.len().saturating_sub(1));
                     self.selected_row = self.result_filtered_indices[new_pos];
                 } else {
-                    self.selected_row = self.selected_row.saturating_add(data_height).min(self.query_data.len().saturating_sub(1));
+                    self.selected_row = self
+                        .selected_row
+                        .saturating_add(data_height)
+                        .min(self.query_data.len().saturating_sub(1));
                 }
                 self.ensure_cell_visible(data_height);
                 self.rebuild_json_tree();
@@ -1621,10 +1665,11 @@ impl App {
                 self.result_filter_cursor = self.result_filter_input.len();
                 true
             }
-            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE
-                || key.modifiers == KeyModifiers::SHIFT =>
+            KeyCode::Char(c)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
             {
-                self.result_filter_input.insert(self.result_filter_cursor, c);
+                self.result_filter_input
+                    .insert(self.result_filter_cursor, c);
                 self.result_filter_cursor += 1;
                 self.apply_result_filter();
                 true
@@ -1874,7 +1919,11 @@ impl App {
         effective_offset = effective_offset.min(total.saturating_sub(visible));
 
         let line = effective_offset + relative_row;
-        if line < total { Some(line) } else { None }
+        if line < total {
+            Some(line)
+        } else {
+            None
+        }
     }
 
     fn copy_selected_cell(&mut self) {
@@ -2111,7 +2160,8 @@ impl App {
         if self.focus == Focus::Inspector && self.current_page == Page::QueryEditor {
             if self.inspector_edit_col.is_some() {
                 self.key_hints =
-                    " Esc:Cancel | Enter:Save | Alt+Z:Undo | Alt+H:Inspector | Alt+I:Editor".to_string();
+                    " Esc:Cancel | Enter:Save | Alt+Z:Undo | Alt+H:Inspector | Alt+I:Editor"
+                        .to_string();
                 return;
             }
             let is_json_cell = self
@@ -2135,10 +2185,12 @@ impl App {
             && self.query_editor_focus == QueryEditorFocus::Results
         {
             self.key_hints =
-                " Ctrl+Q:Quit | j/k:Nav | Alt+H:Inspector | Alt+I:Editor | Alt+F:Filter".to_string();
+                " Ctrl+Q:Quit | j/k:Nav | Alt+H:Inspector | Alt+I:Editor | Alt+F:Filter"
+                    .to_string();
         } else {
             self.key_hints =
-                " Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector | Alt-I:Editor".to_string();
+                " Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector | Alt-I:Editor"
+                    .to_string();
         }
     }
 
@@ -2309,9 +2361,7 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         self.status_message.clear();
 
-        if key.code == KeyCode::Char('q')
-            && key.modifiers == KeyModifiers::CONTROL
-        {
+        if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::CONTROL {
             self.should_quit = true;
             return;
         }
@@ -2429,9 +2479,7 @@ impl App {
             }
             KeyCode::Char('i') if key.modifiers == KeyModifiers::ALT => {
                 self.show_query_editor = !self.show_query_editor;
-                if !self.show_query_editor
-                    && self.query_editor_focus == QueryEditorFocus::Editor
-                {
+                if !self.show_query_editor && self.query_editor_focus == QueryEditorFocus::Editor {
                     self.query_editor_focus = QueryEditorFocus::Results;
                 }
                 self.update_key_hints();
@@ -2505,6 +2553,7 @@ impl App {
                         if id.starts_with("table:") && !id.ends_with(':') {
                             let table_name = id.strip_prefix("table:").unwrap().to_string();
                             self.pending_action = PendingAction::LoadColumns { table: table_name };
+                            self.explorer_tree.toggle_selected();
                         } else {
                             self.explorer_tree.toggle_selected();
                         }
@@ -2537,39 +2586,77 @@ impl App {
                 let id = self.explorer_tree.selected_id();
                 if let Some(ref id) = id {
                     if id.starts_with("table:") && !id.ends_with(':') {
-                        let table_name = id.strip_prefix("table:").unwrap();
-                        let (db_name, short) = match table_name.find('.') {
-                            Some(pos) => (&table_name[..pos], &table_name[pos + 1..]),
-                            None => ("", table_name),
-                        };
-                        let query = if self.active_db_type() == Some(DatabaseType::MongoDB) {
-                            if db_name.is_empty() {
-                                format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
+                        let is_redis = self.active_db_type() == Some(DatabaseType::Redis);
+                        if is_redis {
+                            let table_name = id.strip_prefix("table:").unwrap();
+                            self.pending_action = PendingAction::LoadColumns {
+                                table: table_name.to_string(),
+                            };
+                            self.explorer_tree.toggle_selected();
+                        } else {
+                            let table_name = id.strip_prefix("table:").unwrap();
+                            let (db_name, short) = match table_name.find('.') {
+                                Some(pos) => (&table_name[..pos], &table_name[pos + 1..]),
+                                None => ("", table_name),
+                            };
+                            let query = if self.active_db_type() == Some(DatabaseType::MongoDB) {
+                                if db_name.is_empty() {
+                                    format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
+                                } else {
+                                    format!(
+                                        "{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n",
+                                        db_name, short
+                                    )
+                                }
                             } else {
+                                let db_type = self.active_db_type();
+                                let q = if db_type == Some(DatabaseType::MySQL)
+                                    || db_type == Some(DatabaseType::MariaDB)
+                                {
+                                    '`'
+                                } else {
+                                    '"'
+                                };
                                 format!(
-                                    "{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n",
-                                    db_name, short
+                                    "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
+                                    q = q,
+                                    short = short
                                 )
+                            };
+                            self.pending_action = PendingAction::OpenQuery(query);
+                        }
+                    } else if id.starts_with("column:") {
+                        let is_redis = self.active_db_type() == Some(DatabaseType::Redis);
+                        if is_redis {
+                            let column_key = id.strip_prefix("column:").unwrap();
+                            let parts: Vec<&str> = column_key.splitn(3, '.').collect();
+                            if parts.len() == 3 {
+                                let db_prefix = parts[0];
+                                let key_type = parts[1];
+                                let key_name = parts[2];
+                                let base_cmd = match key_type {
+                                    "strings" => format!("GET \"{}\"", key_name),
+                                    "hashes" => format!("HGETALL \"{}\"", key_name),
+                                    "lists" => format!("LRANGE \"{}\" 0 -1", key_name),
+                                    "sets" => format!("SMEMBERS \"{}\"", key_name),
+                                    "sorted_sets" => {
+                                        format!("ZRANGE \"{}\" 0 -1 WITHSCORES", key_name)
+                                    }
+                                    "streams" => format!("XRANGE \"{}\" - +", key_name),
+                                    _ => format!("GET \"{}\"", key_name),
+                                };
+                                let db_num = db_prefix.trim_start_matches("db");
+                                let db_num = if db_num.is_empty() { "0" } else { db_num };
+                                let cmd = format!("SELECT {}\n{}", db_num, base_cmd);
+                                self.pending_action = PendingAction::OpenQuery(cmd);
+                            } else {
+                                self.current_page = Page::Explorer;
+                                self.set_status(format!("Viewing column details"));
                             }
                         } else {
-                            let db_type = self.active_db_type();
-                            let q = if db_type == Some(DatabaseType::MySQL)
-                                || db_type == Some(DatabaseType::MariaDB)
-                            {
-                                '`'
-                            } else {
-                                '"'
-                            };
-                            format!(
-                                "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
-                                q = q,
-                                short = short
-                            )
-                        };
-                        self.pending_action = PendingAction::OpenQuery(query);
-                    } else if id.starts_with("column:") {
-                        self.current_page = Page::Explorer;
-                        self.set_status(format!("Viewing column details"));
+                            self.current_page = Page::Explorer;
+                            self.set_status(format!("Viewing column details"));
+                        }
                     } else if !id.ends_with(':') {
                         self.explorer_tree.toggle_selected();
                     }
@@ -2626,9 +2713,19 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if let Some(conn) = self.connections.get(self.conn_list_selected) {
-                    let password = conn.password.clone();
-                    self.conn_form =
-                        Some(ConnectionFormState::from_config(conn, password.as_deref()));
+                    let password = conn.password.clone().or_else(|| {
+                        match storage::credentials::get_password(&conn.password_key()) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::debug!("Failed to load password from keychain: {}", e);
+                                None
+                            }
+                        }
+                    });
+                    self.conn_form = Some(ConnectionFormState::from_config(
+                        conn,
+                        password.as_deref(),
+                    ));
                     self.conn_page_mode = ConnPageMode::Editing(conn.id);
                 }
                 true
@@ -2839,38 +2936,51 @@ impl App {
                             let id = self.explorer_tree.selected_id();
                             if let Some(ref id) = id {
                                 if id.starts_with("table:") && !id.ends_with(':') {
-                                    let table_name = id.strip_prefix("table:").unwrap();
-                                    let (db_name, short) = match table_name.find('.') {
-                                        Some(pos) => (&table_name[..pos], &table_name[pos + 1..]),
-                                        None => ("", table_name),
-                                    };
-                                    let query = if self.active_db_type()
-                                        == Some(DatabaseType::MongoDB)
-                                    {
-                                        if db_name.is_empty() {
-                                            format!(
-                                                "{{ \"find\": \"{}\", \"limit\": 1000 }}\n",
-                                                short
-                                            )
-                                        } else {
-                                            format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
-                                        }
+                                    let is_redis = self.active_db_type()
+                                        == Some(DatabaseType::Redis);
+                                    if is_redis {
+                                        let table_name =
+                                            id.strip_prefix("table:").unwrap().to_string();
+                                        self.pending_action =
+                                            PendingAction::LoadColumns { table: table_name };
+                                        self.explorer_tree.toggle_selected();
                                     } else {
-                                        let db_type = self.active_db_type();
-                                        let q = if db_type == Some(DatabaseType::MySQL)
-                                            || db_type == Some(DatabaseType::MariaDB)
-                                        {
-                                            '`'
-                                        } else {
-                                            '"'
+                                        let table_name = id.strip_prefix("table:").unwrap();
+                                        let (db_name, short) = match table_name.find('.') {
+                                            Some(pos) => {
+                                                (&table_name[..pos], &table_name[pos + 1..])
+                                            }
+                                            None => ("", table_name),
                                         };
-                                        format!(
-                                            "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
-                                            q = q,
-                                            short = short
-                                        )
-                                    };
-                                    self.pending_action = PendingAction::OpenQuery(query);
+                                        let query = if self.active_db_type()
+                                            == Some(DatabaseType::MongoDB)
+                                        {
+                                            if db_name.is_empty() {
+                                                format!(
+                                                    "{{ \"find\": \"{}\", \"limit\": 1000 }}\n",
+                                                    short
+                                                )
+                                            } else {
+                                                format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
+                                            }
+                                        } else {
+                                            let db_type = self.active_db_type();
+                                            let q = if db_type == Some(DatabaseType::MySQL)
+                                                || db_type == Some(DatabaseType::MariaDB)
+                                            {
+                                                '`'
+                                            } else {
+                                                '"'
+                                            };
+                                            format!(
+                                                "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
+                                                q = q,
+                                                short = short
+                                            )
+                                        };
+                                        self.pending_action =
+                                            PendingAction::OpenQuery(query);
+                                    }
                                 } else {
                                     self.explorer_tree.toggle_selected();
                                 }
@@ -2920,15 +3030,21 @@ impl App {
                         let editor_x = self.main_rect.x + 1;
                         let editor_y = self.main_rect.y + 1;
                         let editor_w = self.main_rect.width.saturating_sub(2);
-                        let editor_h = editor_bottom.saturating_sub(self.main_rect.y).saturating_sub(2);
+                        let editor_h = editor_bottom
+                            .saturating_sub(self.main_rect.y)
+                            .saturating_sub(2);
                         let editor_inner = Rect::new(editor_x, editor_y, editor_w, editor_h);
                         if is_double {
                             self.editing_query = true;
-                            let lines: Vec<String> = self.query_text.lines().map(String::from).collect();
+                            let lines: Vec<String> =
+                                self.query_text.lines().map(String::from).collect();
                             self.query_editor = TextArea::from(lines);
                             let cursor_row = row.saturating_sub(editor_inner.y);
                             let cursor_col = col.saturating_sub(editor_inner.x);
-                            self.query_editor.move_cursor(ratatui_textarea::CursorMove::Jump(cursor_row, cursor_col));
+                            self.query_editor
+                                .move_cursor(ratatui_textarea::CursorMove::Jump(
+                                    cursor_row, cursor_col,
+                                ));
                             self.input_mode = InputMode::Insert;
                             self.pending_j = false;
                             self.pending_d = false;
@@ -2936,12 +3052,18 @@ impl App {
                             if self.editing_query {
                                 let cursor_row = row.saturating_sub(editor_inner.y);
                                 let cursor_col = col.saturating_sub(editor_inner.x);
-                                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Jump(cursor_row, cursor_col));
+                                self.query_editor
+                                    .move_cursor(ratatui_textarea::CursorMove::Jump(
+                                        cursor_row, cursor_col,
+                                    ));
                             } else {
                                 self.enter_query_editor_normal_mode();
                                 let cursor_row = row.saturating_sub(editor_inner.y);
                                 let cursor_col = col.saturating_sub(editor_inner.x);
-                                self.query_editor.move_cursor(ratatui_textarea::CursorMove::Jump(cursor_row, cursor_col));
+                                self.query_editor
+                                    .move_cursor(ratatui_textarea::CursorMove::Jump(
+                                        cursor_row, cursor_col,
+                                    ));
                             }
                         }
                     } else {
@@ -2955,9 +3077,9 @@ impl App {
                                 if let Some(docs) = self.mongo_raw_documents.as_ref() {
                                     let total = self.mongo_doc_state.cached_line_count(docs);
                                     let visible_height = (self.main_rect.height * 75 / 100)
-                                        .saturating_sub(2) as usize;
-                                    self.mongo_doc_state
-                                        .adjust_offset(visible_height, total);
+                                        .saturating_sub(2)
+                                        as usize;
+                                    self.mongo_doc_state.adjust_offset(visible_height, total);
                                 }
                                 if is_double {
                                     // Trigger edit via Enter key event
@@ -3054,7 +3176,8 @@ impl App {
             }
             return;
         }
-        if form.database.trim().is_empty() {
+        let db_optional = matches!(form.db_type, DatabaseType::Redis | DatabaseType::MongoDB);
+        if form.database.trim().is_empty() && !db_optional {
             if let Some(f) = &mut self.conn_form {
                 f.error = Some("Database is required".to_string());
             }
@@ -3062,34 +3185,9 @@ impl App {
         }
 
         let is_new = form.is_new;
+        let password_cleared = form.password.is_empty() && !is_new;
 
-        // Resolve password: use form password if non-empty, otherwise preserve existing
-        let password = if !form.password.is_empty() {
-            form.password.clone()
-        } else if !is_new {
-            self.connections
-                .iter()
-                .find(|c| c.id == form.editing_id.unwrap_or_default())
-                .and_then(|c| c.password.clone())
-                .or_else(|| {
-                    storage::credentials::get_password(
-                        &form
-                            .editing_id
-                            .map(|id| format!("dbrusty/{}", id))
-                            .unwrap_or_default(),
-                    )
-                    .ok()
-                    .flatten()
-                })
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        let mut config = form.to_config();
-        if !password.is_empty() {
-            config.password = Some(password.clone());
-        }
+        let config = form.to_config();
 
         if is_new {
             self.connections.push(config.clone());
@@ -3101,9 +3199,11 @@ impl App {
             }
         }
 
-        if !password.is_empty() {
-            if let Err(e) = storage::credentials::save_password(&config.password_key(), &password) {
-                tracing::warn!("Failed to save password to keychain: {}", e);
+        if password_cleared {
+            let _ = storage::credentials::delete_password(&config.password_key());
+        } else if let Some(pw) = &config.password {
+            if let Err(e) = storage::credentials::save_password(&config.password_key(), pw) {
+                tracing::debug!("Failed to save password to keychain: {}", e);
             }
         }
 
@@ -3156,8 +3256,10 @@ impl App {
         self.completion_state.cancel();
         let lines: Vec<String> = self.query_text.lines().map(String::from).collect();
         self.query_editor = TextArea::from(lines);
-        self.query_editor.move_cursor(ratatui_textarea::CursorMove::Bottom);
-        self.query_editor.move_cursor(ratatui_textarea::CursorMove::End);
+        self.query_editor
+            .move_cursor(ratatui_textarea::CursorMove::Bottom);
+        self.query_editor
+            .move_cursor(ratatui_textarea::CursorMove::End);
         self.apply_cursor_style();
     }
 
@@ -3168,17 +3270,24 @@ impl App {
     fn update_completion(&mut self) {
         let (cursor_row, cursor_col) = self.query_editor.cursor();
         let lines = self.query_editor.lines();
-        let current_line = lines.get(cursor_row as usize).map(|s| s.as_str()).unwrap_or("");
+        let current_line = lines
+            .get(cursor_row as usize)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let db_type = self.active_db_type();
 
-        use crate::completion::provider::CompletionProvider;
-        use crate::completion::sql_provider::SqlCompletionProvider;
         use crate::completion::mongo_provider::MongoCompletionProvider;
+        use crate::completion::provider::CompletionProvider;
         use crate::completion::redis_provider::RedisCompletionProvider;
+        use crate::completion::sql_provider::SqlCompletionProvider;
 
         let provider: Box<dyn CompletionProvider> = match db_type.as_ref() {
-            Some(crate::models::connection::DatabaseType::MongoDB) => Box::new(MongoCompletionProvider),
-            Some(crate::models::connection::DatabaseType::Redis) => Box::new(RedisCompletionProvider),
+            Some(crate::models::connection::DatabaseType::MongoDB) => {
+                Box::new(MongoCompletionProvider)
+            }
+            Some(crate::models::connection::DatabaseType::Redis) => {
+                Box::new(RedisCompletionProvider)
+            }
             _ => Box::new(SqlCompletionProvider),
         };
 

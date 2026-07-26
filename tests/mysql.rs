@@ -128,7 +128,9 @@ async fn test_mysql_get_columns() {
         .await
         .unwrap();
     let columns = provider.get_columns(&tbl).await.unwrap();
-    assert!(columns.iter().any(|c| c.name == "id" && c.is_pk && c.is_auto_increment));
+    assert!(columns
+        .iter()
+        .any(|c| c.name == "id" && c.is_pk && c.is_auto_increment));
     assert!(columns.iter().any(|c| c.name == "label" && !c.nullable));
     assert!(columns.iter().any(|c| c.name == "active"));
     assert!(columns.iter().any(|c| c.name == "price"));
@@ -158,7 +160,10 @@ async fn test_mysql_get_indexes() {
         .await
         .unwrap();
     assert!(indexes.iter().any(|i| i.primary));
-    if let Some(email_idx) = indexes.iter().find(|i| i.columns.contains(&"email".to_string())) {
+    if let Some(email_idx) = indexes
+        .iter()
+        .find(|i| i.columns.contains(&"email".to_string()))
+    {
         assert!(email_idx.unique);
     }
     provider
@@ -303,10 +308,7 @@ async fn test_mysql_where_operators() {
         .unwrap();
     assert_eq!(result.rows.len(), 2);
     let result = provider
-        .execute_query(&format!(
-            "SELECT * FROM {} WHERE name LIKE 'A%'",
-            tbl
-        ))
+        .execute_query(&format!("SELECT * FROM {} WHERE name LIKE 'A%'", tbl))
         .await
         .unwrap();
     assert_eq!(result.rows.len(), 1);
@@ -539,10 +541,7 @@ async fn test_mysql_update() {
         .await
         .unwrap();
     let result = provider
-        .execute_query(&format!(
-            "SELECT score FROM {} WHERE name = 'Alice'",
-            tbl
-        ))
+        .execute_query(&format!("SELECT score FROM {} WHERE name = 'Alice'", tbl))
         .await
         .unwrap();
     let score: i64 = result.rows[0][0].to_string().parse().unwrap();
@@ -569,10 +568,7 @@ async fn test_mysql_delete() {
         .await
         .unwrap();
     provider
-        .execute_query(&format!(
-            "INSERT INTO {} (name) VALUES ('Alice')",
-            tbl
-        ))
+        .execute_query(&format!("INSERT INTO {} (name) VALUES ('Alice')", tbl))
         .await
         .unwrap();
     provider
@@ -683,10 +679,7 @@ async fn test_mysql_null_handling() {
         .await
         .unwrap();
     let result = provider
-        .execute_query(&format!(
-            "SELECT * FROM {} WHERE score IS NULL",
-            tbl
-        ))
+        .execute_query(&format!("SELECT * FROM {} WHERE score IS NULL", tbl))
         .await
         .unwrap();
     assert_eq!(result.rows.len(), 1);
@@ -718,10 +711,7 @@ async fn test_mysql_distinct() {
         .unwrap();
     for city in &["NYC", "LA", "NYC", "SF", "LA"] {
         provider
-            .execute_query(&format!(
-                "INSERT INTO {} (city) VALUES ('{}')",
-                tbl, city
-            ))
+            .execute_query(&format!("INSERT INTO {} (city) VALUES ('{}')", tbl, city))
             .await
             .unwrap();
     }
@@ -746,17 +736,11 @@ async fn test_mysql_union() {
     let t1 = table_name("u1");
     let t2 = table_name("u2");
     provider
-        .execute_query(&format!(
-            "CREATE TABLE {} (id INT, label VARCHAR(20))",
-            t1
-        ))
+        .execute_query(&format!("CREATE TABLE {} (id INT, label VARCHAR(20))", t1))
         .await
         .unwrap();
     provider
-        .execute_query(&format!(
-            "CREATE TABLE {} (id INT, label VARCHAR(20))",
-            t2
-        ))
+        .execute_query(&format!("CREATE TABLE {} (id INT, label VARCHAR(20))", t2))
         .await
         .unwrap();
     provider
@@ -992,10 +976,7 @@ async fn test_mysql_show_databases() {
         None => return,
     };
     let provider = ensure_provider(&config).await;
-    let result = provider
-        .execute_query("SHOW DATABASES")
-        .await
-        .unwrap();
+    let result = provider.execute_query("SHOW DATABASES").await.unwrap();
     assert!(result.is_select);
     assert!(!result.rows.is_empty());
 }

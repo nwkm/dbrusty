@@ -756,7 +756,10 @@ async fn test_mongodb_update_with_operators() {
     let tags = get_field_val(&provider, &find, "tags").await;
     assert!(tags.as_array().is_some(), "$push should produce array");
     let arr = tags.as_array().unwrap();
-    assert!(arr.iter().any(|v| v.as_str() == Some("b")), "$push should add 'b'");
+    assert!(
+        arr.iter().any(|v| v.as_str() == Some("b")),
+        "$push should add 'b'"
+    );
 
     // $unset
     let q = format!(
@@ -766,7 +769,10 @@ async fn test_mongodb_update_with_operators() {
     provider.execute_query(&q).await.unwrap();
     let r = provider.execute_query(&find).await.unwrap();
     let docs = r.raw_documents.as_ref().unwrap();
-    assert!(docs[0].get("active").is_none(), "$unset should remove active");
+    assert!(
+        docs[0].get("active").is_none(),
+        "$unset should remove active"
+    );
 
     // $rename
     let q = format!(
@@ -776,7 +782,10 @@ async fn test_mongodb_update_with_operators() {
     provider.execute_query(&q).await.unwrap();
     let r = provider.execute_query(&find).await.unwrap();
     let docs = r.raw_documents.as_ref().unwrap();
-    assert!(docs[0].get("title").is_some(), "$rename should create title");
+    assert!(
+        docs[0].get("title").is_some(),
+        "$rename should create title"
+    );
     assert!(docs[0].get("name").is_none(), "$rename should remove name");
 
     clear_collection(&provider, &coll).await;
@@ -818,7 +827,10 @@ async fn test_mongodb_update_no_match() {
     assert_eq!(r.rows_affected, 0);
 
     // Verify original doc unchanged
-    let r = provider.execute_query(&format!(r#"{{"find": "{}"}}"#, coll)).await.unwrap();
+    let r = provider
+        .execute_query(&format!(r#"{{"find": "{}"}}"#, coll))
+        .await
+        .unwrap();
     let docs = r.raw_documents.as_ref().unwrap();
     let k = docs[0].get("k").and_then(|v| v.as_i32()).unwrap();
     assert_eq!(k, 1, "document should be unchanged");
@@ -866,7 +878,10 @@ async fn test_mongodb_replace_one() {
         coll
     );
     let _r = provider.execute_query(&q).await.unwrap();
-    let r2 = provider.execute_query(&format!(r#"{{"find": "{}"}}"#, coll)).await.unwrap();
+    let r2 = provider
+        .execute_query(&format!(r#"{{"find": "{}"}}"#, coll))
+        .await
+        .unwrap();
     let docs = r2.raw_documents.as_ref().unwrap();
     let name = docs[0].get("name").and_then(|v| v.as_str()).unwrap();
     assert_eq!(name, "replaced", "update not applied");
@@ -1000,7 +1015,10 @@ async fn test_mongodb_aggregate_add_fields() {
     let r = provider.execute_query(&q).await.unwrap();
     assert_eq!(r.row_count(), 1);
     let docs = r.raw_documents.as_ref().unwrap();
-    assert!(docs[0].get("total").is_some(), "$addFields should add total");
+    assert!(
+        docs[0].get("total").is_some(),
+        "$addFields should add total"
+    );
 
     clear_collection(&provider, &coll).await;
 }

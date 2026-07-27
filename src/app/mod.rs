@@ -2589,10 +2589,24 @@ impl App {
                         let is_redis = self.active_db_type() == Some(DatabaseType::Redis);
                         if is_redis {
                             let table_name = id.strip_prefix("table:").unwrap();
-                            self.pending_action = PendingAction::LoadColumns {
-                                table: table_name.to_string(),
-                            };
-                            self.explorer_tree.toggle_selected();
+                            let parts: Vec<&str> = table_name.splitn(2, '.').collect();
+                            if parts.len() == 2 {
+                                let db_prefix = parts[0];
+                                let key_type = parts[1];
+                                let db_num = db_prefix.trim_start_matches("db");
+                                let db_num = if db_num.is_empty() { "0" } else { db_num };
+                                let base_cmd = match key_type {
+                                    "strings" => "SCAN 0 TYPE string COUNT 100".to_string(),
+                                    "hashes" => "SCAN 0 TYPE hash COUNT 100".to_string(),
+                                    "lists" => "SCAN 0 TYPE list COUNT 100".to_string(),
+                                    "sets" => "SCAN 0 TYPE set COUNT 100".to_string(),
+                                    "sorted_sets" => "SCAN 0 TYPE zset COUNT 100".to_string(),
+                                    "streams" => "SCAN 0 TYPE stream COUNT 100".to_string(),
+                                    _ => "SCAN 0 COUNT 100".to_string(),
+                                };
+                                let cmd = format!("SELECT {}\n{}", db_num, base_cmd);
+                                self.pending_action = PendingAction::OpenQuery(cmd);
+                            }
                         } else {
                             let table_name = id.strip_prefix("table:").unwrap();
                             let (db_name, short) = match table_name.find('.') {

@@ -80,7 +80,13 @@ fn build_flat_database(
     if let Some((_, table_list)) = db_tables {
         let table_items: Vec<TreeItem> = table_list
             .iter()
-            .map(|t| TreeItem::leaf(&format!("table:{}.{}", db, t.name), &t.name, 3))
+            .map(|t| {
+                if t.table_type == "REDIS_TYPE" {
+                    TreeItem::group(&format!("table:{}.{}", db, t.name), &t.name, 3)
+                } else {
+                    TreeItem::leaf(&format!("table:{}.{}", db, t.name), &t.name, 3)
+                }
+            })
             .collect();
         let label = format!("Tables ({})", table_list.len());
         children.push(TreeItem::branch(

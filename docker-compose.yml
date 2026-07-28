@@ -70,6 +70,10 @@ services:
       - redis_data:/data
     restart: unless-stopped
 
+# SQLite is file-based and does not require a dedicated Docker container.
+# The seed script creates ./data/seed.db automatically.
+# The volume below is available for containers that need to access SQLite files.
+
 volumes:
   postgres_data:
   mysql_data:
@@ -77,3 +81,4 @@ volumes:
   mongodb_data:
   mongodb_configdb_data:
   redis_data:
+  sqlite_data:

@@ -64,6 +64,10 @@ path = "src/bin/seed_mongodb.rs"
 name = "seed_redis"
 path = "src/bin/seed_redis.rs"
 
+[[bin]]
+name = "seed_sqlite"
+path = "src/bin/seed_sqlite.rs"
+
 [[bench]]
 name = "scrolling"
 harness = false

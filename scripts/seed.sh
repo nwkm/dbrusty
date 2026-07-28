@@ -26,6 +26,7 @@ usage() {
     echo "  --skip-mariadb     Skip MariaDB seeding"
     echo "  --skip-mongodb     Skip MongoDB seeding"
     echo "  --skip-redis       Skip Redis seeding"
+    echo "  --skip-sqlite      Skip SQLite seeding"
     echo "  --skip-build       Skip cargo build (use existing binaries)"
     echo "  --help             Show this help message"
     exit 0
@@ -36,6 +37,7 @@ SKIP_MYSQL=false
 SKIP_MARIADB=false
 SKIP_MONGODB=false
 SKIP_REDIS=false
+SKIP_SQLITE=false
 SKIP_BUILD=false
 
 while [[ $# -gt 0 ]]; do
@@ -45,6 +47,7 @@ while [[ $# -gt 0 ]]; do
         --skip-mariadb)  SKIP_MARIADB=true;  shift ;;
         --skip-mongodb)  SKIP_MONGODB=true;  shift ;;
         --skip-redis)    SKIP_REDIS=true;    shift ;;
+        --skip-sqlite)   SKIP_SQLITE=true;   shift ;;
         --skip-build)    SKIP_BUILD=true;     shift ;;
         --help)          usage ;;
         *) err "Unknown option: $1"; usage ;;
@@ -54,7 +57,7 @@ done
 # ── Build seed binaries ──────────────────────────────────────────
 if [[ "$SKIP_BUILD" == false ]]; then
     info "Building seed binaries..."
-    cargo build --bin seed_postgresql --bin seed_mysql --bin seed_mariadb --bin seed_mongodb --bin seed_redis
+    cargo build --bin seed_postgresql --bin seed_mysql --bin seed_mariadb --bin seed_mongodb --bin seed_redis --bin seed_sqlite
     ok "Build complete"
 fi
 
@@ -113,6 +116,14 @@ seed_redis() {
     ok "Redis seeded"
 }
 
+# ── Seed SQLite ────────────────────────────────────────────────────
+seed_sqlite() {
+    mkdir -p "$ROOT_DIR/data"
+    info "Seeding SQLite (./data/seed.db) ..."
+    cargo run --bin seed_sqlite -- "$ROOT_DIR/data/seed.db"
+    ok "SQLite seeded"
+}
+
 # ── Main ──────────────────────────────────────────────────────────
 echo ""
 echo -e "${CYAN}══════════════════════════════════════════${NC}"
@@ -140,6 +151,10 @@ if [[ "$SKIP_REDIS" == false ]]; then
     seed_redis
 fi
 
+if [[ "$SKIP_SQLITE" == false ]]; then
+    seed_sqlite
+fi
+
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════${NC}"
 echo -e "${GREEN}  All seeding complete!                  ${NC}"
@@ -153,3 +168,4 @@ echo "  MongoDB:     mongodb://127.0.0.1:27017 (db: dbrusty_seed)"
 echo "  Redis:       redis://127.0.0.1:6379/0 (databases 0-16, db0 default)"
 echo "               data seeded in db0 (strings), db1 (hashes), db2 (lists),"
 echo "               db3 (sets), db4 (sorted sets), db5 (streams)"
+echo "  SQLite:      sqlite://$(realpath "$ROOT_DIR/data/seed.db" 2>/dev/null || echo "$ROOT_DIR/data/seed.db")"

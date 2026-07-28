@@ -1,5 +1,7 @@
-/target
+target/
 
-.claude
+data/
+
+.claude/
 
 CLAUDE.md

@@ -66,16 +66,25 @@ fn columns_from_row(row: &sqlx::sqlite::SqliteRow) -> Vec<ColumnInfo> {
 #[async_trait]
 impl DatabaseProvider for SqliteProvider {
     async fn connect(&mut self, config: &ConnectionConfig) -> DatabaseResult<()> {
-        let conn_str = config
+        let mut conn_str = config
             .connection_string(None)
             .map_err(|e| DatabaseError::Connection(e.to_string()))?;
+
+        // Append mode=rwc so the database file is created if it doesn't exist.
+        if !conn_str.contains("?mode=") && !conn_str.contains("&mode=") {
+            if conn_str.contains('?') {
+                conn_str.push_str("&mode=rwc");
+            } else {
+                conn_str.push_str("?mode=rwc");
+            }
+        }
 
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(10))
             .connect(&conn_str)
             .await
-            .map_err(|e| DatabaseError::Connection(e.to_string()))?;
+            .map_err(|e| DatabaseError::Connection(format!("{}: {}", conn_str, e)))?;
 
         self.pool = Some(pool);
         Ok(())

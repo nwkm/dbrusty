@@ -243,10 +243,31 @@ Fuzzy filter matches across all cell values with character-level highlighting (y
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift+Tab` | Cycle fields |
-| `Left` / `Right` | Change DB type (on Type field) |
+| `Tab` / `Shift+Tab` | Cycle fields (tab bar → form/URI fields) |
+| `Left` / `Right` | Switch tab (on tab bar) / Change DB type (on Type field) |
 | `Enter` | Submit |
 | `Esc` | Cancel |
+
+### Connection URI Formats
+
+The URI tab in the Add/Edit Connection dialog accepts raw connection strings.
+Paste a URI to auto-fill all connection fields.
+
+| Database | URI Format |
+|----------|------------|
+| PostgreSQL | `postgres://user:password@host:5432/database` |
+| MySQL | `mysql://user:password@host:3306/database` |
+| MariaDB | `mariadb://user:password@host:3308/database` |
+| SQLite | `sqlite:///absolute/path/to/database.db` |
+| SQL Server | `sqlserver://user:password@host:1433/database` |
+| MongoDB | `mongodb://host:27017/database` |
+| Redis | `redis://host:6379/0` |
+
+**Tips:**
+- SQLite paths can be absolute (`sqlite:///home/user/data.db`) or relative (`sqlite://data/seed.db`)
+- Redis db number is the path segment (`redis://host:6379/2` for db 2)
+- Omit credentials for unauthenticated connections (`postgres://host:5432/db`)
+- The connection name is auto-generated from the URI when submitting from the URI tab
 
 ## Configuration
 

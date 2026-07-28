@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::app::FormTab;
 use crate::models::connection::DatabaseType;
 
 const FORM_FIELDS: &[&str] = &[
@@ -113,8 +114,8 @@ fn render_form_modal(frame: &mut Frame, area: Rect, app: &App) {
         None => return,
     };
 
-    let modal_width = area.width.clamp(40, 52);
-    let modal_height = 16;
+    let modal_width = area.width.clamp(40, 58);
+    let modal_height = 18;
     let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
     let y = area.y + (area.height.saturating_sub(modal_height)) / 3;
 
@@ -134,7 +135,116 @@ fn render_form_modal(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(modal_area);
     frame.render_widget(&block, modal_area);
 
-    let field_rows = Layout::vertical(vec![Constraint::Length(1); FORM_FIELDS.len()]).split(inner);
+    // ── Tab bar ──────────────────────────────────────────────────────
+    let active_tab_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::REVERSED);
+    let inactive_tab_style = Style::default().fg(Color::DarkGray);
+
+    let form_tab_style = if form.form_tab == FormTab::Form {
+        active_tab_style
+    } else {
+        inactive_tab_style
+    };
+    let uri_tab_style = if form.form_tab == FormTab::Uri {
+        active_tab_style
+    } else {
+        inactive_tab_style
+    };
+
+    let tab_bar = Line::from(vec![
+        Span::styled("  Form ", form_tab_style),
+        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("URI ", uri_tab_style),
+    ]);
+    let tab_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    frame.render_widget(Paragraph::new(tab_bar), tab_area);
+
+    let hint = Paragraph::new(" Ctrl+h/l:Tab  Tab:Next  Shift+Tab:Prev  Enter:Save  Esc:Cancel ")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+
+    if form.form_tab == FormTab::Uri {
+        // ── URI tab: render URI input + help ─────────────────────────
+        let uri_label = " URI: ";
+        let uri_val = if form.uri_input.is_empty() {
+            String::new()
+        } else {
+            form.uri_input.clone()
+        };
+        let uri_display = if uri_val.is_empty() {
+            Span::styled(uri_label.to_string(), Style::default().fg(Color::DarkGray))
+        } else {
+            Span::styled(
+                format!("{}{}", uri_label, uri_val),
+                Style::default().fg(Color::White),
+            )
+        };
+        let uri_line = Line::from(vec![
+            Span::styled("> ", Style::default().fg(Color::Cyan)),
+            uri_display,
+        ]);
+        let uri_area = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+        frame.render_widget(Paragraph::new(uri_line), uri_area);
+
+        let help_lines = vec![
+            Line::from(Span::styled("", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled(
+                " Supported URIs:",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                " postgres://user:pass@host:5432/db",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                " mysql://user:pass@host:3306/db",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                " mariadb://user:pass@host:3308/db",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                " sqlite:///path/to/database.db",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                " mongodb://host:27017/db",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                " redis://host:6379/0",
+                Style::default().fg(Color::Gray),
+            )),
+        ];
+        let help_area = Rect::new(inner.x, inner.y + 2, inner.width, help_lines.len() as u16);
+        frame.render_widget(Paragraph::new(help_lines), help_area);
+
+        // Hint bar
+        let hint_section =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+        frame.render_widget(hint, hint_section[1]);
+
+        if let Some(err) = &form.error {
+            let err_line = Paragraph::new(err.as_str()).style(Style::default().fg(Color::Red));
+            frame.render_widget(err_line, hint_section[0]);
+        }
+
+        let cursor_x = inner.x + 2 + uri_label.len() as u16 + uri_val.len() as u16;
+        if cursor_x < x + modal_width - 1 {
+            frame.set_cursor_position((cursor_x, inner.y + 1));
+        }
+        return;
+    }
+
+    // ── Form tab: render fields ─────────────────────────────────────
+    let field_start_y = inner.y + 1;
+    let field_area = Rect::new(inner.x, field_start_y, inner.width, inner.height - 2);
+    let field_rows =
+        Layout::vertical(vec![Constraint::Length(1); FORM_FIELDS.len()]).split(field_area);
 
     for (i, (label, row_area)) in FORM_FIELDS.iter().zip(field_rows.iter()).enumerate() {
         let val = form.field_value(i);
@@ -166,9 +276,6 @@ fn render_form_modal(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let hint_section = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
-    let hint = Paragraph::new(" Tab:Next  Shift+Tab:Prev  Enter:Save  Esc:Cancel ")
-        .style(Style::default().fg(Color::DarkGray))
-        .alignment(Alignment::Center);
     frame.render_widget(hint, hint_section[1]);
 
     if let Some(err) = &form.error {
@@ -179,8 +286,8 @@ fn render_form_modal(frame: &mut Frame, area: Rect, app: &App) {
     let active_field = form.active_field;
     let label = FORM_FIELDS[active_field];
     let val = form.field_value(active_field);
-    let cursor_y = y + 1 + active_field as u16;
-    let cursor_x = x + 6 + label.len() as u16 + val.len() as u16;
+    let cursor_y = field_start_y + active_field as u16;
+    let cursor_x = inner.x + 5 + label.len() as u16 + val.len() as u16;
     if cursor_x < x + modal_width - 1 {
         frame.set_cursor_position((cursor_x, cursor_y));
     }

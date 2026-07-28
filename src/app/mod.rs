@@ -132,6 +132,12 @@ pub enum ConnPageMode {
     Deleting(usize),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormTab {
+    Form,
+    Uri,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConnectionFormState {
     pub is_new: bool,
@@ -145,6 +151,8 @@ pub struct ConnectionFormState {
     pub password: String,
     pub active_field: usize,
     pub error: Option<String>,
+    pub form_tab: FormTab,
+    pub uri_input: String,
 }
 
 impl ConnectionFormState {
@@ -175,6 +183,8 @@ impl ConnectionFormState {
             password: std::env::var("DATABASE_PASSWORD").unwrap_or_default(),
             active_field: 0,
             error: None,
+            form_tab: FormTab::Form,
+            uri_input: String::new(),
         }
     }
 
@@ -191,6 +201,8 @@ impl ConnectionFormState {
             password: password.unwrap_or("").to_string(),
             active_field: 0,
             error: None,
+            form_tab: FormTab::Form,
+            uri_input: conn.connection_string(password).unwrap_or_default(),
         }
     }
 
@@ -246,6 +258,109 @@ impl ConnectionFormState {
             password,
         }
     }
+
+    pub fn build_uri(&self) -> String {
+        let pw = if self.password.is_empty() {
+            String::new()
+        } else {
+            self.password.clone()
+        };
+        match self.db_type {
+            DatabaseType::Postgres => {
+                format!("postgres://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+            }
+            DatabaseType::MySQL => {
+                format!("mysql://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+            }
+            DatabaseType::MariaDB => {
+                format!("mariadb://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+            }
+            DatabaseType::SQLite => {
+                format!("sqlite://{}", self.database)
+            }
+            DatabaseType::SQLServer => {
+                format!("sqlserver://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+            }
+            DatabaseType::MongoDB => {
+                if self.username.is_empty() && pw.is_empty() {
+                    format!("mongodb://{}:{}/{}", self.host, self.port, self.database)
+                } else {
+                    format!("mongodb://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+                }
+            }
+            DatabaseType::Redis => {
+                let db = if self.database.is_empty() {
+                    "0".to_string()
+                } else {
+                    self.database.clone()
+                };
+                if pw.is_empty() {
+                    format!("redis://{}:{}/{}", self.host, self.port, db)
+                } else {
+                    format!("redis://:{}@{}:{}/{}", pw, self.host, self.port, db)
+                }
+            }
+        }
+    }
+}
+
+fn parse_connection_uri(uri: &str) -> Result<(DatabaseType, String, u16, String, String, String), String> {
+    let (scheme, rest) = uri
+        .split_once("://")
+        .ok_or_else(|| "Invalid URI: missing ://".to_string())?;
+
+    let db_type = match scheme.to_lowercase().as_str() {
+        "postgres" | "postgresql" => DatabaseType::Postgres,
+        "mysql" => DatabaseType::MySQL,
+        "mariadb" => DatabaseType::MariaDB,
+        "sqlite" => DatabaseType::SQLite,
+        "mongodb" => DatabaseType::MongoDB,
+        "redis" => DatabaseType::Redis,
+        "sqlserver" => DatabaseType::SQLServer,
+        _ => return Err(format!("Unknown database scheme: {}", scheme)),
+    };
+
+    if db_type == DatabaseType::SQLite {
+        return Ok((db_type, String::new(), 0, rest.to_string(), String::new(), String::new()));
+    }
+
+    let (auth_and_host, database) = if let Some(idx) = rest.find('/') {
+        (&rest[..idx], &rest[idx + 1..])
+    } else {
+        (rest, "")
+    };
+
+    let (userinfo, hostport) = if let Some(idx) = auth_and_host.rfind('@') {
+        (&auth_and_host[..idx], &auth_and_host[idx + 1..])
+    } else {
+        ("", auth_and_host)
+    };
+
+    let (username, password) = if let Some(idx) = userinfo.find(':') {
+        (userinfo[..idx].to_string(), userinfo[idx + 1..].to_string())
+    } else if !userinfo.is_empty() {
+        (userinfo.to_string(), String::new())
+    } else {
+        (String::new(), String::new())
+    };
+
+    let (host, port) = if let Some(idx) = hostport.rfind(':') {
+        let port_str = &hostport[idx + 1..];
+        let port: u16 = port_str.parse().map_err(|_| format!("Invalid port: {}", port_str))?;
+        (hostport[..idx].to_string(), port)
+    } else {
+        let host = hostport.to_string();
+        let port = if host.is_empty() {
+            db_type.default_port()
+        } else {
+            db_type.default_port()
+        };
+        (host, port)
+    };
+
+    let host = if host.is_empty() { "localhost".into() } else { host };
+
+    Ok((db_type, host, port, database.to_string(), username, password))
 }
 
 pub enum PendingAction {
@@ -2774,17 +2889,21 @@ impl App {
         match key.code {
             KeyCode::Tab => {
                 if let Some(form) = &mut self.conn_form {
-                    form.active_field = (form.active_field + 1) % 7;
+                    if form.form_tab == FormTab::Form {
+                        form.active_field = (form.active_field + 1) % 7;
+                    }
                 }
                 true
             }
             KeyCode::BackTab => {
                 if let Some(form) = &mut self.conn_form {
-                    form.active_field = if form.active_field == 0 {
-                        6
-                    } else {
-                        form.active_field - 1
-                    };
+                    if form.form_tab == FormTab::Form {
+                        form.active_field = if form.active_field == 0 {
+                            6
+                        } else {
+                            form.active_field - 1
+                        };
+                    }
                 }
                 true
             }
@@ -2799,7 +2918,7 @@ impl App {
             }
             KeyCode::Left | KeyCode::Right => {
                 if let Some(form) = &mut self.conn_form {
-                    if form.active_field == 1 {
+                    if form.form_tab == FormTab::Form && form.active_field == 1 {
                         let idx = DB_TYPE_CYCLE
                             .iter()
                             .position(|t| *t == form.db_type)
@@ -2822,11 +2941,49 @@ impl App {
                 }
                 true
             }
-            _ => {
+            KeyCode::Char(ch) if (ch == 'h' || ch == 'H') && key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(form) = &mut self.conn_form {
+                    if form.form_tab != FormTab::Form {
+                        form.form_tab = FormTab::Form;
+                        self.sync_connection_form();
+                    }
+                }
+                true
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(form) = &mut self.conn_form {
+                    if form.form_tab != FormTab::Form {
+                        form.form_tab = FormTab::Form;
+                        self.sync_connection_form();
+                    }
+                }
+                true
+            }
+            KeyCode::Char(ch) if (ch == 'l' || ch == 'L') && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(form) = &mut self.conn_form {
+                    if form.form_tab != FormTab::Uri {
+                        form.form_tab = FormTab::Uri;
+                        self.sync_connection_form();
+                    }
+                }
+                true
+            }
+            _ => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return true;
+                }
+                if let Some(form) = &mut self.conn_form {
+                    if form.form_tab == FormTab::Uri {
+                        let mut field =
+                            crate::widgets::input::InputField::with_value("", form.uri_input.clone());
+                        field.handle_key(key);
+                        form.uri_input = field.value;
+                        return true;
+                    }
                     if form.active_field != 1 {
                         let val = form.field_value(form.active_field);
-                        let mut field = crate::widgets::input::InputField::with_value("", val);
+                        let mut field =
+                            crate::widgets::input::InputField::with_value("", val);
                         field.handle_key(key);
                         form.set_field(form.active_field, field.value);
                     }
@@ -3179,6 +3336,42 @@ impl App {
     }
 
     fn conn_form_submit(&mut self) {
+        if let Some(form) = &self.conn_form {
+            if form.form_tab == FormTab::Uri {
+                match parse_connection_uri(&form.uri_input) {
+                    Ok((db_type, host, port, database, username, password)) => {
+                        let f = self.conn_form.as_mut().unwrap();
+                        if f.name.is_empty() {
+                            let generated = if !username.is_empty() && !host.is_empty() {
+                                format!("{}@{}", username, host)
+                            } else if !host.is_empty() {
+                                if host == "localhost" && !database.is_empty() {
+                                    database.clone()
+                                } else {
+                                    host.clone()
+                                }
+                            } else if !database.is_empty() {
+                                database.clone()
+                            } else {
+                                db_type.display_name().to_string()
+                            };
+                            f.name = generated;
+                        }
+                        f.db_type = db_type;
+                        f.host = host;
+                        f.port = port.to_string();
+                        f.database = database;
+                        f.username = username;
+                        f.password = password;
+                    }
+                    Err(e) => {
+                        self.conn_form.as_mut().unwrap().error = Some(e);
+                        return;
+                    }
+                }
+            }
+        }
+
         let form = match &self.conn_form {
             Some(f) => f.clone(),
             None => return,
@@ -3234,6 +3427,40 @@ impl App {
             ));
         } else {
             self.set_status(format!("Updated connection \"{}\"", config.name));
+        }
+    }
+
+    fn sync_connection_form(&mut self) {
+        if let Some(form) = &mut self.conn_form {
+            match form.form_tab {
+                FormTab::Form => {
+                    form.uri_input = form.build_uri();
+                }
+                FormTab::Uri => {
+                    if let Ok((db_type, host, port, database, username, password)) =
+                        parse_connection_uri(&form.uri_input)
+                    {
+                        if form.name.is_empty() {
+                            let generated = if !username.is_empty() && !host.is_empty() {
+                                format!("{}@{}", username, host)
+                            } else if !host.is_empty() && host != "localhost" {
+                                host.clone()
+                            } else if !database.is_empty() {
+                                database.clone()
+                            } else {
+                                String::new()
+                            };
+                            form.name = generated;
+                        }
+                        form.db_type = db_type;
+                        form.host = host;
+                        form.port = port.to_string();
+                        form.database = database;
+                        form.username = username;
+                        form.password = password;
+                    }
+                }
+            }
         }
     }
 

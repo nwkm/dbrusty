@@ -368,6 +368,7 @@ pub enum PendingAction {
     Connect(ConnectionConfig),
     Disconnect(Uuid),
     LoadColumns { table: String },
+    CacheColumns { table: String },
     OpenQuery(String),
     RunQuery(String),
 }
@@ -799,6 +800,9 @@ impl App {
             PendingAction::LoadColumns { table } => {
                 self.load_columns(&table).await;
             }
+            PendingAction::CacheColumns { table } => {
+                self.cache_columns(&table).await;
+            }
             PendingAction::OpenQuery(query) => {
                 self.query_text.clone_from(&query);
                 let lines: Vec<String> = query.lines().map(String::from).collect();
@@ -1141,6 +1145,20 @@ impl App {
                         .collect();
                     self.explorer_tree.set_children(&tree_id, child_items);
                     self.set_status(format!("Loaded {} items for \"{}\"", columns.len(), table));
+                }
+                Err(e) => {
+                    self.set_status(format!("Failed to load items: {}", e));
+                }
+            }
+        }
+    }
+
+    async fn cache_columns(&mut self, table: &str) {
+        if let Some(provider) = self.pool.get_active() {
+            match provider.get_columns(table).await {
+                Ok(columns) => {
+                    self.metadata_cache
+                        .set_columns(table.to_string(), columns.clone());
                 }
                 Err(e) => {
                     self.set_status(format!("Failed to load items: {}", e));
@@ -2635,7 +2653,7 @@ impl App {
             if id.starts_with("table:") && !id.ends_with(':') {
                 let table_name = id.strip_prefix("table:").unwrap().to_string();
                 if self.metadata_cache.get_columns(&table_name).is_none() {
-                    self.pending_action = PendingAction::LoadColumns { table: table_name };
+                    self.pending_action = PendingAction::CacheColumns { table: table_name };
                 }
             }
         }
@@ -3483,7 +3501,18 @@ impl App {
         }
         self.current_page = page;
         if page == Page::QueryEditor {
-            self.enter_query_editor_normal_mode();
+            self.query_editor_focus = if self.show_query_editor {
+                QueryEditorFocus::Editor
+            } else {
+                QueryEditorFocus::Results
+            };
+            self.editing_query = self.show_query_editor;
+            self.input_mode = InputMode::Normal;
+            self.completion_state.cancel();
+            if self.show_query_editor {
+                self.enter_query_editor_normal_mode();
+            }
+            self.apply_cursor_style();
         }
         self.update_key_hints();
         self.set_status(format!("Switched to {}", page.title()));

@@ -46,6 +46,8 @@ All notable changes to Dbrusty are documented here.
 - **Empty filter results show zero rows instead of falling back to full dataset** — filter remains active with "0 / N results" display
 - **Filter matches against cell values only (not column names)** — prevents phantom matches from column name substrings
 - **Filtered row navigation respects filtered set** — arrow keys, PageUp/Down, Home/End stay within filtered indices
+- **Explorer table nodes only show expand arrow on explicit expand (Right key)** — navigating tables with j/k no longer calls `set_children` on the tree node, preventing toggle arrows from appearing on leaf table nodes; columns are still cached for the detail pane display
+- **Switching to QueryEditor (4 key) no longer freezes keyboard when editor is hidden** — `switch_to(Page::QueryEditor)` only enters editing mode when `show_query_editor` is true; when the editor is hidden (`show_query_editor = false`), sidebar navigation keys continue to work
 
 ---
 

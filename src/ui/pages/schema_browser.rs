@@ -1002,7 +1002,7 @@ fn handle_create_key(app: &mut App, key: &crossterm::event::KeyEvent) -> bool {
             true
         }
         KeyCode::Tab => {
-            app.schema_browser.create_field = (app.schema_browser.create_field + 1) % 1;
+            app.schema_browser.create_field = (app.schema_browser.create_field + 1) % 2;
             true
         }
         KeyCode::Char(c) => {

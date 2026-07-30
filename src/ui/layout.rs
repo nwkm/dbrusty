@@ -2,12 +2,14 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
+
 use serde_json;
 
 use crate::app::{App, Focus, InputMode, Page};
+use crate::export::ExportFormat;
 use crate::ui::pages;
 use crate::ui::sidebar;
 use crate::widgets::tree::{TreeItem, TreeState};
@@ -53,6 +55,215 @@ pub fn render_layout(frame: &mut Frame, app: &mut App) {
 
     if app.current_page == Page::QueryEditor && app.completion_state.visible {
         crate::completion::widget::render_autocomplete(frame, main_area, &app.completion_state);
+    }
+
+    if app.export_dialog.is_some() {
+        render_export_dialog(frame, frame.area(), app);
+    }
+
+    if app.import_dialog.is_some() {
+        render_import_dialog(frame, frame.area(), app);
+    }
+}
+
+fn render_export_dialog(frame: &mut Frame, area: Rect, app: &App) {
+    let dialog = match &app.export_dialog {
+        Some(d) => d,
+        None => return,
+    };
+
+    let popup_w = 60.min(area.width.saturating_sub(6));
+    let popup_h = 12;
+    let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Export Results ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(popup_area);
+    frame.render_widget(&block, popup_area);
+
+    let formats = ExportFormat::all();
+    let mut fmt_spans = vec![Span::raw("Format: ")];
+    for (i, fmt) in formats.iter().enumerate() {
+        let label = if i == dialog.format {
+            format!(" [{}] ", fmt.label())
+        } else {
+            format!(" {} ", fmt.label())
+        };
+        let style = if i == dialog.format {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        fmt_spans.push(Span::styled(label, style));
+    }
+    fmt_spans.push(Span::raw("  "));
+    fmt_spans.push(Span::styled(
+        "\u{2190} \u{2192} change format",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let filename_prefix = Span::styled("File: ", Style::default().fg(Color::Yellow));
+    let filename_style = Style::default().fg(Color::White);
+    let filename_span = Span::styled(dialog.filename.as_str(), filename_style);
+    let cursor_display = if dialog.cursor <= dialog.filename.len() {
+        " \u{2591}".to_string()
+    } else {
+        String::new()
+    };
+    let cursor_span = Span::styled(
+        cursor_display,
+        Style::default().add_modifier(Modifier::REVERSED),
+    );
+
+    let total_rows = app.query_data.len();
+    let info = Span::styled(
+        format!("Rows: {}", total_rows),
+        Style::default().fg(Color::DarkGray),
+    );
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(fmt_spans),
+        Line::from(""),
+        Line::from(vec![filename_prefix, filename_span, cursor_span]),
+        Line::from(""),
+        Line::from(info),
+        Line::from(""),
+        Line::from(Span::styled(
+            " Enter:Export  Esc:Cancel ",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn render_import_dialog(frame: &mut Frame, area: Rect, app: &App) {
+    let dialog = match &app.import_dialog {
+        Some(d) => d,
+        None => return,
+    };
+
+    let title = if dialog.preview.is_some() {
+        " Import Preview "
+    } else {
+        " Import from File "
+    };
+
+    let popup_w = 70.min(area.width.saturating_sub(6));
+    let popup_h = if dialog.preview.is_some() { 16 } else { 8 };
+    let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(popup_area);
+    frame.render_widget(&block, popup_area);
+
+    if let Some(ref preview) = dialog.preview {
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!("File: {}", dialog.path),
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from(""),
+        ];
+        if !preview.columns.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("Columns: {}", preview.columns.join(", ")),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            format!("Statements: {}", preview.sql_statements.len()),
+            Style::default().fg(Color::Green),
+        )));
+
+        if !preview.sample_rows.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Preview (first rows):",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for row in &preview.sample_rows {
+                let display: String = row
+                    .iter()
+                    .take(5)
+                    .map(|v| {
+                        if v.len() > 20 {
+                            format!("{}...", &v[..20])
+                        } else {
+                            v.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                lines.push(Line::from(Span::styled(
+                    display,
+                    Style::default().fg(Color::White),
+                )));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Enter:Confirm Import  Esc:Cancel ",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        frame.render_widget(
+            Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+            inner,
+        );
+    } else {
+        let path_prefix = Span::styled("Path: ", Style::default().fg(Color::Yellow));
+        let path_span = Span::styled(dialog.path.as_str(), Style::default().fg(Color::White));
+        let cursor_display = if dialog.cursor <= dialog.path.len() {
+            " \u{2591}".to_string()
+        } else {
+            String::new()
+        };
+        let cursor_span = Span::styled(
+            cursor_display,
+            Style::default().add_modifier(Modifier::REVERSED),
+        );
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "Enter path to a .csv, .json, or .sql file",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+            Line::from(vec![path_prefix, path_span, cursor_span]),
+            Line::from(""),
+            Line::from(Span::styled(
+                " Enter:Load  Esc:Cancel ",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+
+        frame.render_widget(
+            Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+            inner,
+        );
     }
 }
 

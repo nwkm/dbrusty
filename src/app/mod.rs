@@ -363,6 +363,141 @@ fn parse_connection_uri(uri: &str) -> Result<(DatabaseType, String, u16, String,
     Ok((db_type, host, port, database.to_string(), username, password))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaBrowserCategory {
+    Tables,
+    Views,
+    Indexes,
+    Sequences,
+    Triggers,
+    Functions,
+    Procedures,
+}
+
+impl SchemaBrowserCategory {
+    pub fn label(&self) -> &'static str {
+        match self {
+            SchemaBrowserCategory::Tables => "Tables",
+            SchemaBrowserCategory::Views => "Views",
+            SchemaBrowserCategory::Indexes => "Indexes",
+            SchemaBrowserCategory::Sequences => "Sequences",
+            SchemaBrowserCategory::Triggers => "Triggers",
+            SchemaBrowserCategory::Functions => "Functions",
+            SchemaBrowserCategory::Procedures => "Procedures",
+        }
+    }
+
+    pub fn all() -> &'static [SchemaBrowserCategory] {
+        &[
+            SchemaBrowserCategory::Tables,
+            SchemaBrowserCategory::Views,
+            SchemaBrowserCategory::Indexes,
+            SchemaBrowserCategory::Sequences,
+            SchemaBrowserCategory::Triggers,
+            SchemaBrowserCategory::Functions,
+            SchemaBrowserCategory::Procedures,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaBrowserMode {
+    Browse,
+    CreatingTable,
+    DroppingTable(String),
+    RenamingTable(String),
+    AlteringTable(String),
+    ImportingSchema,
+    SchemaDiff,
+}
+
+#[derive(Debug, Clone)]
+pub struct SchemaBrowserState {
+    pub mode: SchemaBrowserMode,
+    pub selected_category: usize,
+    pub selected_item: usize,
+    pub items: Vec<String>,
+    pub ddl_text: String,
+    pub scroll: usize,
+    pub create_name: String,
+    pub create_field: usize,
+    pub create_error: Option<String>,
+    pub item_scroll: usize,
+    // Alter table
+    pub alter_action: usize,
+    pub alter_column_name: String,
+    pub alter_column_type: String,
+    pub alter_focus: usize,
+    // Import schema
+    pub import_sql: String,
+    pub import_cursor: usize,
+    // Schema diff
+    pub diff_snapshot_a: String,
+    pub diff_snapshot_b: String,
+    pub diff_result: String,
+    // Export / Reverse engineer
+    pub export_ddl: String,
+}
+
+impl SchemaBrowserState {
+    pub fn new() -> Self {
+        Self {
+            mode: SchemaBrowserMode::Browse,
+            selected_category: 0,
+            selected_item: 0,
+            items: Vec::new(),
+            ddl_text: String::new(),
+            scroll: 0,
+            create_name: String::new(),
+            create_field: 0,
+            create_error: None,
+            item_scroll: 0,
+            alter_action: 0,
+            alter_column_name: String::new(),
+            alter_column_type: String::new(),
+            alter_focus: 0,
+            import_sql: String::new(),
+            import_cursor: 0,
+            diff_snapshot_a: String::new(),
+            diff_snapshot_b: String::new(),
+            diff_result: String::new(),
+            export_ddl: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuAction {
+    ViewDdl,
+    AlterTable,
+    DropTable,
+    RenameTable,
+    CreateTable,
+    GenerateDdl,
+    SchemaDiff,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextMenu {
+    pub visible: bool,
+    pub actions: Vec<ContextMenuAction>,
+    pub selected: usize,
+    pub x: u16,
+    pub y: u16,
+}
+
+impl ContextMenu {
+    pub fn new() -> Self {
+        Self {
+            visible: false,
+            actions: Vec::new(),
+            selected: 0,
+            x: 0,
+            y: 0,
+        }
+    }
+}
+
 pub enum PendingAction {
     None,
     Connect(ConnectionConfig),
@@ -371,6 +506,44 @@ pub enum PendingAction {
     CacheColumns { table: String },
     OpenQuery(String),
     RunQuery(String),
+    GenerateDdl(String),
+    ExportResults { format: crate::export::ExportFormat, filename: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportDialog {
+    pub format: usize,
+    pub filename: String,
+    pub cursor: usize,
+}
+
+impl ExportDialog {
+    pub fn new() -> Self {
+        Self {
+            format: 0,
+            filename: String::from("export"),
+            cursor: 6,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportFileDialog {
+    pub path: String,
+    pub cursor: usize,
+    pub preview: Option<crate::import::ImportPreview>,
+    pub confirmed: bool,
+}
+
+impl ImportFileDialog {
+    pub fn new() -> Self {
+        Self {
+            path: String::new(),
+            cursor: 0,
+            preview: None,
+            confirmed: false,
+        }
+    }
 }
 
 const DB_TYPE_CYCLE: &[DatabaseType] = &[
@@ -449,6 +622,13 @@ pub struct App {
     pub pending_d: bool,
     pub is_busy: bool,
     background_rx: mpsc::UnboundedReceiver<BackgroundEvent>,
+    // M17: Schema management
+    pub schema_browser: SchemaBrowserState,
+    pub context_menu: ContextMenu,
+    pub export_sql: String,
+    // M18: Import/Export
+    pub export_dialog: Option<ExportDialog>,
+    pub import_dialog: Option<ImportFileDialog>,
 }
 
 fn mongo_value_strip_quotes(s: &str) -> &str {
@@ -623,10 +803,15 @@ impl App {
             pending_j: false,
             pending_d: false,
             is_busy: false,
+            export_dialog: None,
+            import_dialog: None,
             background_rx: {
                 let (_tx, rx) = mpsc::unbounded_channel();
                 rx
             },
+            schema_browser: SchemaBrowserState::new(),
+            context_menu: ContextMenu::new(),
+            export_sql: String::new(),
         };
         app.set_status("Ready");
         app
@@ -824,6 +1009,31 @@ impl App {
                 }
                 self.spawn_query(sql);
             }
+            PendingAction::GenerateDdl(schema) => {
+                if self.is_busy {
+                    self.set_status("Already busy, please wait...");
+                    self.pending_action = PendingAction::GenerateDdl(schema);
+                    return;
+                }
+                self.is_busy = true;
+                self.set_status("Generating schema DDL...");
+                if let Some(provider) = self.pool.get_active() {
+                    match provider.get_full_schema_ddl(&schema).await {
+                        Ok(ddl) => {
+                            self.schema_browser.export_ddl = ddl;
+                            self.schema_browser.ddl_text = self.schema_browser.export_ddl.clone();
+                            self.schema_browser.mode = SchemaBrowserMode::Browse;
+                            self.set_status("Schema DDL generated.");
+                        }
+                        Err(e) => {
+                            self.set_status(format!("Failed to generate DDL: {}", e));
+                        }
+                    }
+                } else {
+                    self.set_status("No active connection.");
+                }
+                self.is_busy = false;
+            }
             PendingAction::Disconnect(id) => {
                 if let Some(provider) = self.pool.get_mut(id) {
                     let name = self
@@ -841,6 +1051,26 @@ impl App {
                         self.query_text.clear();
                         self.query_editor = TextArea::default();
                         self.set_status(format!("Disconnected from \"{}\"", name));
+                    }
+                }
+            }
+            PendingAction::ExportResults { format, filename } => {
+                let columns = self.query_columns.clone();
+                let rows = self.query_data.clone();
+                if columns.is_empty() || rows.is_empty() {
+                    self.set_status("No data to export.");
+                    return;
+                }
+                match crate::export::export_data(format, &columns, &rows, &filename) {
+                    Ok(()) => {
+                        self.set_status(format!(
+                            "Exported {} rows to {}",
+                            rows.len(),
+                            filename
+                        ));
+                    }
+                    Err(e) => {
+                        self.set_status(format!("Export error: {}", e));
                     }
                 }
             }
@@ -1735,6 +1965,15 @@ impl App {
                 }
                 true
             }
+            KeyCode::Char('e') if key.modifiers == KeyModifiers::ALT => {
+                if self.query_data.is_empty() {
+                    self.set_status("No results to export.");
+                } else {
+                    self.export_dialog = Some(ExportDialog::new());
+                    self.update_key_hints();
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -1805,6 +2044,176 @@ impl App {
                     .insert(self.result_filter_cursor, c);
                 self.result_filter_cursor += 1;
                 self.apply_result_filter();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_export_dialog_key(&mut self, key: &KeyEvent) {
+        let dialog = match self.export_dialog.as_mut() {
+            Some(d) => d,
+            None => return,
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.export_dialog = None;
+                self.update_key_hints();
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if dialog.format > 0 {
+                    dialog.format -= 1;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if dialog.format + 1 < crate::export::ExportFormat::all().len() {
+                    dialog.format += 1;
+                }
+            }
+            KeyCode::Enter => {
+                let format = crate::export::ExportFormat::all()[dialog.format];
+                let filename = dialog.filename.trim().to_string();
+                if filename.is_empty() {
+                    self.set_status("Filename cannot be empty.");
+                    return;
+                }
+                let filename = if filename.contains('.') {
+                    filename
+                } else {
+                    format!("{}.{}", filename, format.extension())
+                };
+                let format = crate::export::ExportFormat::all()[dialog.format];
+                self.export_dialog = None;
+                self.pending_action = PendingAction::ExportResults { format, filename };
+                self.update_key_hints();
+            }
+            KeyCode::Backspace => {
+                if dialog.cursor > 0 {
+                    dialog.filename.remove(dialog.cursor - 1);
+                    dialog.cursor -= 1;
+                }
+            }
+            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE
+                || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                dialog.filename.insert(dialog.cursor, c);
+                dialog.cursor += 1;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_import_dialog_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.import_dialog = None;
+                self.update_key_hints();
+            }
+            KeyCode::Enter => {
+                let path = self.import_dialog.as_ref().map(|d| d.path.clone()).unwrap_or_default();
+                let path_trimmed = path.trim().to_string();
+                if path_trimmed.is_empty() {
+                    self.set_status("File path cannot be empty.");
+                    return;
+                }
+                let format = match crate::import::ImportFormat::from_extension(&path_trimmed) {
+                    Some(f) => f,
+                    None => {
+                        self.set_status("Unsupported file format. Use .csv, .json, or .sql");
+                        return;
+                    }
+                };
+                let table = self
+                    .connections
+                    .iter()
+                    .find(|c| Some(c.id) == self.pool.active_id)
+                    .map(|c| c.database.as_str())
+                    .unwrap_or("table")
+                    .to_string();
+                match crate::import::import_data(format, &path_trimmed, &table) {
+                    Ok(preview) => {
+                        let stmt_count = preview.sql_statements.len();
+                        let path_display = path_trimmed.clone();
+                        if let Some(ref mut d) = self.import_dialog {
+                            d.preview = Some(preview);
+                        }
+                        self.set_status(format!(
+                            "Loaded {} statements from {}. Press Enter to confirm or Esc to cancel.",
+                            stmt_count, path_display
+                        ));
+                    }
+                    Err(e) => {
+                        self.set_status(format!("Import error: {}", e));
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut d) = self.import_dialog {
+                    if d.cursor > 0 {
+                        d.path.remove(d.cursor - 1);
+                        d.cursor -= 1;
+                    }
+                }
+            }
+            KeyCode::Left => {
+                if let Some(ref mut d) = self.import_dialog {
+                    if d.cursor > 0 {
+                        d.cursor -= 1;
+                    }
+                }
+            }
+            KeyCode::Right => {
+                if let Some(ref mut d) = self.import_dialog {
+                    if d.cursor < d.path.len() {
+                        d.cursor += 1;
+                    }
+                }
+            }
+            KeyCode::Home => {
+                if let Some(ref mut d) = self.import_dialog {
+                    d.cursor = 0;
+                }
+            }
+            KeyCode::End => {
+                if let Some(ref mut d) = self.import_dialog {
+                    d.cursor = d.path.len();
+                }
+            }
+            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE
+                || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                if let Some(ref mut d) = self.import_dialog {
+                    d.path.insert(d.cursor, c);
+                    d.cursor += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_import_preview_key(&mut self, key: &KeyEvent) -> bool {
+        let dialog = match self.import_dialog.as_mut() {
+            Some(d) => d,
+            None => return false,
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.import_dialog = None;
+                self.update_key_hints();
+                true
+            }
+            KeyCode::Enter => {
+                if let Some(ref preview) = dialog.preview.clone() {
+                    dialog.confirmed = true;
+                    self.import_dialog = None;
+                    let sql = preview.sql_statements.join("\n");
+                    self.pending_action = PendingAction::RunQuery(sql);
+                    self.set_status(format!(
+                        "Executing {} SQL statements...",
+                        preview.sql_statements.len()
+                    ));
+                }
+                self.update_key_hints();
                 true
             }
             _ => false,
@@ -2313,13 +2722,37 @@ impl App {
                     " j/k:Scroll | g/G:Top/Bot | Click:Edit | Alt+Z:Undo | Alt+H:Inspector | Alt+I:Editor"
                         .to_string();
             }
+        } else if self.export_dialog.is_some() {
+            self.key_hints =
+                " ←→:Format | Enter:Export | Esc:Cancel | Type:filename "
+                    .to_string();
+        } else if let Some(ref dialog) = self.import_dialog {
+            if dialog.preview.is_some() {
+                self.key_hints =
+                    " Enter:Confirm Import | Esc:Cancel "
+                        .to_string();
+            } else {
+                self.key_hints =
+                    " Enter:Load File | Esc:Cancel | Type:path "
+                        .to_string();
+            }
         } else if self.focus == Focus::Main
             && self.current_page == Page::QueryEditor
             && self.query_editor_focus == QueryEditorFocus::Results
         {
             self.key_hints =
-                " Ctrl+Q:Quit | j/k:Nav | Alt+H:Inspector | Alt+I:Editor | Alt+F:Filter"
+                " Ctrl+Q:Quit | j/k:Nav | Alt+H:Inspector | Alt+I:Editor | Alt+F:Filter | Alt+E:Export"
                     .to_string();
+        } else if self.current_page == Page::SchemaBrowser {
+            if matches!(self.schema_browser.mode, SchemaBrowserMode::Browse) {
+                self.key_hints =
+                    " j/k:Categories | h/l:Items | g/G:Top/Bot | n:Create | d:Drop | r:Rename | a:Alter | i:Import | I:ImportFile | E:Export | s:Diff | Tab:Focus "
+                        .to_string();
+            } else {
+                self.key_hints =
+                    " Esc:Cancel | Enter:Confirm "
+                        .to_string();
+            }
         } else {
             self.key_hints =
                 " Ctrl+Q:Quit | 1-8:Pages | ?:Help | Tab:Focus | Alt-H:Inspector | Alt-I:Editor"
@@ -2499,6 +2932,23 @@ impl App {
             return;
         }
 
+        if self.export_dialog.is_some() {
+            self.handle_export_dialog_key(&key);
+            return;
+        }
+
+        if let Some(ref mut dialog) = self.import_dialog {
+            if dialog.preview.is_some() && !dialog.confirmed {
+                // Preview shown, waiting for confirm
+                if self.handle_import_preview_key(&key) {
+                    return;
+                }
+            } else {
+                self.handle_import_dialog_key(&key);
+                return;
+            }
+        }
+
         if self.result_filter_active
             && self.current_page == Page::QueryEditor
             && self.focus == Focus::Main
@@ -2530,6 +2980,10 @@ impl App {
             if self.handle_inspector_key(&key) || self.inspector_edit_col.is_some() {
                 return;
             }
+        }
+
+        if self.current_page == Page::SchemaBrowser && crate::ui::pages::schema_browser::handle_key(self, &key) {
+            return;
         }
 
         match key.code {

@@ -613,6 +613,162 @@ impl DatabaseProvider for MariadbProvider {
             connection_uptime: None,
         })
     }
+
+    async fn get_create_table_ddl(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+        let sql = format!("SHOW CREATE TABLE `{}`.`{}`", schema, table);
+        let row = sqlx::query(&sql)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
+        let create_table: String = row.try_get("Create Table")
+            .or_else(|_| row.try_get(1))
+            .map_err(|_| DatabaseError::Metadata("Could not read SHOW CREATE TABLE result".into()))?;
+        Ok(format!("{};", create_table.trim()))
+    }
+
+    async fn get_create_view_ddl(&self, schema: &str, view: &str) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+        let sql = format!("SHOW CREATE VIEW `{}`.`{}`", schema, view);
+        let row = sqlx::query(&sql)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
+        let create_view: String = row.try_get("Create View")
+            .or_else(|_| row.try_get(1))
+            .map_err(|_| DatabaseError::Metadata("Could not read SHOW CREATE VIEW result".into()))?;
+        Ok(format!("{};", create_view.trim()))
+    }
+
+    async fn get_full_schema_ddl(&self, schema: &str) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+        let mut parts: Vec<String> = Vec::new();
+
+        // Tables
+        let table_rows = sqlx::query(
+            "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME",
+        )
+        .bind(schema)
+        .fetch_all(pool)
+        .await?;
+        for r in &table_rows {
+            let tbl: String = r.try_get("TABLE_NAME")
+                .or_else(|_| r.try_get(0))
+                .unwrap_or_default();
+            if let Ok(ddl) = self.get_create_table_ddl(schema, &tbl).await {
+                parts.push(ddl);
+            }
+        }
+
+        // Views
+        let view_rows = sqlx::query(
+            "SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
+        )
+        .bind(schema)
+        .fetch_all(pool)
+        .await?;
+        for r in &view_rows {
+            let vw: String = r.try_get("TABLE_NAME")
+                .or_else(|_| r.try_get(0))
+                .unwrap_or_default();
+            if let Ok(ddl) = self.get_create_view_ddl(schema, &vw).await {
+                parts.push(ddl);
+            }
+        }
+
+        // Triggers
+        let trig_rows = sqlx::query(
+            "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME",
+        )
+        .bind(schema)
+        .fetch_all(pool)
+        .await?;
+        for r in &trig_rows {
+            let tn: String = r.try_get("TRIGGER_NAME")
+                .or_else(|_| r.try_get(0))
+                .unwrap_or_default();
+            let sql = format!("SHOW CREATE TRIGGER `{}`.`{}`", schema, tn);
+            if let Ok(row) = sqlx::query(&sql).fetch_one(pool).await {
+                if let Ok(trig_ddl) = row.try_get::<String, _>("Create Trigger")
+                    .or_else(|_| row.try_get(1))
+                {
+                    parts.push(format!("{};", trig_ddl.trim()));
+                }
+            }
+        }
+
+        // Functions and Procedures
+        let func_rows = sqlx::query(
+            "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_TYPE, ROUTINE_NAME",
+        )
+        .bind(schema)
+        .fetch_all(pool)
+        .await?;
+        for r in &func_rows {
+            let rn: String = r.try_get("ROUTINE_NAME")
+                .or_else(|_| r.try_get(0))
+                .unwrap_or_default();
+            let sql = format!("SHOW CREATE FUNCTION `{}`.`{}`", schema, rn);
+            if let Ok(row) = sqlx::query(&sql).fetch_one(pool).await {
+                let field = if row.try_get::<String, _>(0).is_ok() { "Create Function" } else { "Create Procedure" };
+                if let Ok(ddl) = row.try_get::<String, _>(field)
+                    .or_else(|_| row.try_get(2))
+                {
+                    parts.push(format!("{};", ddl.trim()));
+                }
+            }
+        }
+
+        parts.push(String::new());
+        Ok(parts.join("\n\n"))
+    }
+
+    async fn get_foreign_keys(&self, table: &str) -> DatabaseResult<Vec<ForeignKeyInfo>> {
+        let pool = self.pool()?;
+        let (schema_name, table_name) = parse_schema_table(table);
+        let rows = sqlx::query(
+            r#"
+            SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME,
+                   k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME,
+                   c.UPDATE_RULE, c.DELETE_RULE
+            FROM information_schema.KEY_COLUMN_USAGE k
+            JOIN information_schema.REFERENTIAL_CONSTRAINTS c
+                ON k.CONSTRAINT_NAME = c.CONSTRAINT_NAME AND k.CONSTRAINT_SCHEMA = c.CONSTRAINT_SCHEMA
+            WHERE k.TABLE_SCHEMA = ? AND k.TABLE_NAME = ? AND k.REFERENCED_TABLE_NAME IS NOT NULL
+            ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION
+            "#,
+        )
+        .bind(schema_name)
+        .bind(table_name)
+        .fetch_all(pool)
+        .await?;
+
+        let mut fk_map: std::collections::BTreeMap<String, ForeignKeyInfo> =
+            std::collections::BTreeMap::new();
+        for r in &rows {
+            let cname: String = col_str(r, "CONSTRAINT_NAME");
+            let col: String = col_str(r, "COLUMN_NAME");
+            let ref_tbl: String = col_str(r, "REFERENCED_TABLE_NAME");
+            let ref_col: String = col_str(r, "REFERENCED_COLUMN_NAME");
+            let up_rule: String = col_str(r, "UPDATE_RULE");
+            let del_rule: String = col_str(r, "DELETE_RULE");
+            let entry = fk_map.entry(cname.clone()).or_insert_with(|| ForeignKeyInfo {
+                name: cname,
+                columns: Vec::new(),
+                ref_table: ref_tbl,
+                ref_columns: Vec::new(),
+                update_rule: Some(up_rule),
+                delete_rule: Some(del_rule),
+            });
+            entry.columns.push(col);
+            entry.ref_columns.push(ref_col);
+        }
+        Ok(fk_map.into_values().collect())
+    }
 }
 
 fn parse_schema_table(identifier: &str) -> (String, String) {

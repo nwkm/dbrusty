@@ -292,4 +292,85 @@ impl DatabaseProvider for SqliteProvider {
             connection_uptime: None,
         })
     }
+
+    async fn get_create_table_ddl(
+        &self,
+        _schema: &str,
+        table: &str,
+    ) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+        )
+        .bind(table)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            DatabaseError::Metadata(format!("Table \"{}\" not found in sqlite_master", table))
+        })?;
+        let ddl: String = row.get("sql");
+        Ok(format!("{ddl};"))
+    }
+
+    async fn get_create_view_ddl(&self, _schema: &str, view: &str) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT sql FROM sqlite_master WHERE type='view' AND name=?1",
+        )
+        .bind(view)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            DatabaseError::Metadata(format!("View \"{}\" not found in sqlite_master", view))
+        })?;
+        let ddl: String = row.get("sql");
+        Ok(format!("{ddl};"))
+    }
+
+    async fn get_full_schema_ddl(&self, _schema: &str) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT sql FROM sqlite_master WHERE type IN ('table','view','index','trigger') AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut parts: Vec<String> = rows.iter().map(|r| {
+            let sql: String = r.get("sql");
+            if !sql.ends_with(';') { format!("{sql};") } else { sql }
+        }).collect();
+        parts.push(String::new());
+        Ok(parts.join("\n\n"))
+    }
+
+    async fn get_foreign_keys(&self, table: &str) -> DatabaseResult<Vec<ForeignKeyInfo>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(&format!("PRAGMA foreign_key_list(\"{table}\")"))
+            .fetch_all(pool)
+            .await?;
+        let mut fks: std::collections::BTreeMap<i32, ForeignKeyInfo> =
+            std::collections::BTreeMap::new();
+        for row in &rows {
+            let id: i32 = row.get("id");
+            let _seq: i32 = row.get("seq");
+            let fk_table: String = row.get("table");
+            let from: String = row.get("from");
+            let to: String = row.get("to");
+            let on_update: String = row.get("on_update");
+            let on_delete: String = row.get("on_delete");
+            if let Some(entry) = fks.get_mut(&id) {
+                entry.columns.push(from);
+                entry.ref_columns.push(to);
+            } else {
+                fks.insert(id, ForeignKeyInfo {
+                    name: format!("fk_{table}_{fk_table}_{id}"),
+                    columns: vec![from],
+                    ref_table: fk_table,
+                    ref_columns: vec![to],
+                    update_rule: Some(on_update),
+                    delete_rule: Some(on_delete),
+                });
+            }
+        }
+        Ok(fks.into_values().collect())
+    }
 }

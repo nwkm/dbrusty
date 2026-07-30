@@ -9,8 +9,8 @@ impl From<sqlx::Error> for DatabaseError {
     }
 }
 use crate::database::types::{
-    ColumnInfo, FunctionInfo, IndexInfo, ProcedureInfo, SequenceInfo, ServerInfo, TableInfo,
-    TriggerInfo, TypeSchemaInfo, ViewInfo,
+    ColumnInfo, ForeignKeyInfo, FunctionInfo, IndexInfo, ProcedureInfo, SequenceInfo, ServerInfo,
+    TableInfo, TriggerInfo, TypeSchemaInfo, ViewInfo,
 };
 use crate::models::connection::ConnectionConfig;
 
@@ -70,6 +70,34 @@ pub trait DatabaseProvider: Send + Sync {
     }
 
     async fn get_custom_types(&self, _schema: &str) -> DatabaseResult<Vec<TypeSchemaInfo>> {
+        Ok(Vec::new())
+    }
+
+    // ── DDL generation (provider-specific) ──
+
+    async fn get_create_table_ddl(
+        &self,
+        _schema: &str,
+        _table: &str,
+    ) -> DatabaseResult<String> {
+        Err(DatabaseError::Metadata(
+            "DDL generation not supported for this provider".into(),
+        ))
+    }
+
+    async fn get_create_view_ddl(&self, _schema: &str, _view: &str) -> DatabaseResult<String> {
+        Err(DatabaseError::Metadata(
+            "DDL generation not supported for this provider".into(),
+        ))
+    }
+
+    async fn get_full_schema_ddl(&self, _schema: &str) -> DatabaseResult<String> {
+        Err(DatabaseError::Metadata(
+            "Full schema DDL not supported for this provider".into(),
+        ))
+    }
+
+    async fn get_foreign_keys(&self, _table: &str) -> DatabaseResult<Vec<ForeignKeyInfo>> {
         Ok(Vec::new())
     }
 }

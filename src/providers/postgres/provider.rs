@@ -702,4 +702,293 @@ impl DatabaseProvider for PostgresProvider {
             connection_uptime: uptime,
         })
     }
+
+    async fn get_create_table_ddl(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+
+        // Get columns
+        let col_rows = sqlx::query(
+            r#"
+            SELECT c.column_name, c.data_type, c.character_maximum_length,
+                   c.is_nullable, c.column_default, c.numeric_precision, c.numeric_scale,
+                   (CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN 1 ELSE 0 END) AS is_pk
+            FROM information_schema.columns c
+            LEFT JOIN information_schema.key_column_usage kcu
+                ON c.table_schema = kcu.table_schema AND c.table_name = kcu.table_name AND c.column_name = kcu.column_name
+            LEFT JOIN information_schema.table_constraints tc
+                ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+                AND tc.constraint_type = 'PRIMARY KEY'
+            WHERE c.table_schema = $1 AND c.table_name = $2
+            ORDER BY c.ordinal_position
+            "#,
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(pool)
+        .await?;
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("CREATE TABLE {}.\"{}\" (", quote_pg_id(schema), table));
+
+        let mut col_parts: Vec<String> = Vec::new();
+        for row in &col_rows {
+            let col_name: String = row.get("column_name");
+            let data_type: String = row.get("data_type");
+            let char_max: Option<i32> = row.get("character_maximum_length");
+            let num_prec: Option<i32> = row.get("numeric_precision");
+            let num_scale: Option<i32> = row.get("numeric_scale");
+            let is_nullable: String = row.get("is_nullable");
+            let col_default: Option<String> = row.get("column_default");
+            let is_pk: i32 = row.get("is_pk");
+
+            let mut ct = data_type;
+            if let Some(clen) = char_max {
+                ct = format!("{}({})", ct, clen);
+            } else if let Some(prec) = num_prec {
+                if let Some(scale) = num_scale {
+                    if scale > 0 {
+                        ct = format!("{}({},{})", ct, prec, scale);
+                    } else {
+                        ct = format!("{}({})", ct, prec);
+                    }
+                }
+            }
+
+            let mut parts = vec![format!("    \"{}\" {}", col_name, ct)];
+            if is_pk != 0 {
+                // handled in constraints
+            }
+            if is_nullable == "NO" && is_pk == 0 {
+                parts.push("NOT NULL".to_string());
+            }
+            if let Some(def) = col_default {
+                parts.push(format!("DEFAULT {}", def));
+            }
+            col_parts.push(parts.join(" "));
+        }
+
+        // Get primary key constraint
+        let pk_rows = sqlx::query(
+            r#"
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+            WHERE tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_type = 'PRIMARY KEY'
+            ORDER BY kcu.ordinal_position
+            "#,
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(pool)
+        .await?;
+
+        let pk_cols: Vec<String> = pk_rows.iter().map(|r| r.get("column_name")).collect();
+        if !pk_cols.is_empty() {
+            let cols: Vec<String> = pk_cols.iter().map(|c| format!("\"{}\"", c)).collect();
+            col_parts.push(format!("    PRIMARY KEY ({})", cols.join(", ")));
+        }
+
+        // Get unique constraints
+        let uq_rows = sqlx::query(
+            r#"
+            SELECT tc.constraint_name, kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+            WHERE tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_type = 'UNIQUE'
+            ORDER BY tc.constraint_name, kcu.ordinal_position
+            "#,
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(pool)
+        .await?;
+
+        let mut uq_map: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for r in &uq_rows {
+            let cname: String = r.get("constraint_name");
+            let col: String = r.get("column_name");
+            uq_map.entry(cname).or_default().push(col);
+        }
+        for (_cname, cols) in &uq_map {
+            let q: Vec<String> = cols.iter().map(|c| format!("\"{}\"", c)).collect();
+            col_parts.push(format!("    UNIQUE ({})", q.join(", ")));
+        }
+
+        lines.push(col_parts.join(",\n"));
+        lines.push(");".to_string());
+        Ok(lines.join("\n"))
+    }
+
+    async fn get_create_view_ddl(&self, schema: &str, view: &str) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT view_definition FROM information_schema.views WHERE table_schema = $1 AND table_name = $2",
+        )
+        .bind(schema)
+        .bind(view)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| DatabaseError::Metadata(format!("View \"{schema}.{view}\" not found")))?;
+        let def: String = row.get("view_definition");
+        Ok(format!("CREATE VIEW {}.\"{}\" AS\n{};", quote_pg_id(schema), view, def))
+    }
+
+    async fn get_full_schema_ddl(&self, schema: &str) -> DatabaseResult<String> {
+        let pool = self.pool()?;
+
+        let mut parts: Vec<String> = Vec::new();
+
+        // Types
+        if let Ok(types) = self.get_custom_types(schema).await {
+            for t in types {
+                if t.kind == "enum" {
+                    // We don't have the enum values stored, so skip programmatic generation for now
+                }
+            }
+        }
+
+        // Sequences
+        let seq_rows = sqlx::query(
+            "SELECT sequence_name, data_type, start_value, increment FROM information_schema.sequences WHERE sequence_schema = $1",
+        )
+        .bind(schema)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for r in &seq_rows {
+            let name: String = r.get("sequence_name");
+            let dt: String = r.get("data_type");
+            let sv: Option<i64> = r.get("start_value");
+            let inc: Option<i64> = r.get("increment");
+            let mut s = format!("CREATE SEQUENCE {}.\"{}\" AS {}", quote_pg_id(schema), name, dt);
+            if let Some(v) = sv { s.push_str(&format!(" START WITH {}", v)); }
+            if let Some(v) = inc { s.push_str(&format!(" INCREMENT BY {}", v)); }
+            s.push(';');
+            parts.push(s);
+        }
+
+        // Tables
+        let table_rows = sqlx::query(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name",
+        )
+        .bind(schema)
+        .fetch_all(pool)
+        .await?;
+        for r in &table_rows {
+            let tbl: String = r.get("table_name");
+            if let Ok(ddl) = self.get_create_table_ddl(schema, &tbl).await {
+                parts.push(ddl);
+            }
+        }
+
+        // Indexes
+        let idx_rows = sqlx::query(
+            r#"
+            SELECT indexname, indexdef FROM pg_catalog.pg_indexes WHERE schemaname = $1 AND tablename NOT LIKE '%pg_%' ORDER BY indexname
+            "#,
+        )
+        .bind(schema)
+        .fetch_all(pool)
+        .await?;
+        for r in &idx_rows {
+            let def: String = r.get("indexdef");
+            let def = if !def.ends_with(';') { format!("{def};") } else { def };
+            parts.push(def);
+        }
+
+        // Views
+        let view_rows = sqlx::query(
+            "SELECT table_name FROM information_schema.views WHERE table_schema = $1 ORDER BY table_name",
+        )
+        .bind(schema)
+        .fetch_all(pool)
+        .await?;
+        for r in &view_rows {
+            let vw: String = r.get("table_name");
+            if let Ok(ddl) = self.get_create_view_ddl(schema, &vw).await {
+                parts.push(ddl);
+            }
+        }
+
+        // Triggers
+        if let Ok(triggers) = self.get_triggers(schema).await {
+            for t in triggers {
+                parts.push(format!("{};", t.definition));
+            }
+        }
+
+        // Functions
+        if let Ok(funcs) = self.get_functions(schema).await {
+            for f in funcs {
+                if let Some(def) = f.definition {
+                    parts.push(format!("{};", def));
+                }
+            }
+        }
+
+        parts.push(String::new());
+        Ok(parts.join("\n\n"))
+    }
+
+    async fn get_foreign_keys(&self, table: &str) -> DatabaseResult<Vec<ForeignKeyInfo>> {
+        let pool = self.pool()?;
+        let (schema_name, table_name) = parse_schema_table(table);
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                tc.constraint_name,
+                kcu.column_name,
+                ccu.table_name AS ref_table,
+                ccu.column_name AS ref_column,
+                rc.update_rule,
+                rc.delete_rule
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+            JOIN information_schema.referential_constraints rc
+                ON rc.constraint_name = tc.constraint_name AND rc.constraint_schema = tc.table_schema
+            WHERE tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_type = 'FOREIGN KEY'
+            ORDER BY tc.constraint_name, kcu.ordinal_position
+            "#,
+        )
+        .bind(schema_name)
+        .bind(table_name)
+        .fetch_all(pool)
+        .await?;
+
+        let mut fk_map: std::collections::BTreeMap<String, ForeignKeyInfo> =
+            std::collections::BTreeMap::new();
+        for row in &rows {
+            let cname: String = row.get("constraint_name");
+            let col: String = row.get("column_name");
+            let ref_tbl: String = row.get("ref_table");
+            let ref_col: String = row.get("ref_column");
+            let up_rule: String = row.get("update_rule");
+            let del_rule: String = row.get("delete_rule");
+            let entry = fk_map.entry(cname.clone()).or_insert_with(|| ForeignKeyInfo {
+                name: cname,
+                columns: Vec::new(),
+                ref_table: ref_tbl,
+                ref_columns: Vec::new(),
+                update_rule: Some(up_rule),
+                delete_rule: Some(del_rule),
+            });
+            entry.columns.push(col);
+            entry.ref_columns.push(ref_col);
+        }
+        Ok(fk_map.into_values().collect())
+    }
+}
+
+fn quote_pg_id(s: &str) -> String {
+    format!("\"{}\"", s)
 }

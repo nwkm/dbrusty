@@ -90,3 +90,13 @@ pub struct TypeSchemaInfo {
     pub schema: String,
     pub kind: String,
 }
+
+#[derive(Debug, Clone)]
+pub struct ForeignKeyInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub update_rule: Option<String>,
+    pub delete_rule: Option<String>,
+}

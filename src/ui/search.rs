@@ -456,7 +456,10 @@ pub fn rebuild_search_index(app: &mut App) {
     all.extend(index_query(&app.query_text));
     all.extend(index_results(&app.query_columns, &app.query_data));
 
-    let state = app.global_search.as_mut().unwrap();
+    let state = match app.global_search.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
     state.all_results = all;
     state.filter();
 }

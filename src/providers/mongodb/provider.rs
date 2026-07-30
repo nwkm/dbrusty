@@ -424,8 +424,7 @@ impl DatabaseProvider for MongoProvider {
         {
             Some(c) => *c,
             None => {
-                if obj.len() == 1 {
-                    let (key, val) = obj.iter().next().unwrap();
+                if let Some((key, val)) = obj.iter().next() {
                     if val.as_i64() == Some(1) || val.as_f64() == Some(1.0) {
                         return self
                             .exec_find(

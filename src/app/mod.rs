@@ -66,7 +66,6 @@ enum BackgroundEvent {
     },
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Dashboard,
@@ -100,7 +99,6 @@ impl Page {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -110,7 +108,6 @@ pub enum InputMode {
     Visual,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Sidebar,
@@ -557,11 +554,9 @@ const DB_TYPE_CYCLE: &[DatabaseType] = &[
 ];
 
 pub struct App {
-    #[allow(dead_code)]
     pub config: AppConfig,
     pub should_quit: bool,
     pub current_page: Page,
-    #[allow(dead_code)]
     pub input_mode: InputMode,
     pub focus: Focus,
     pub status_message: String,
@@ -861,7 +856,7 @@ impl App {
             DatabaseType::MariaDB => Box::new(MariadbProvider::new()),
             DatabaseType::MongoDB => Box::new(MongoProvider::new()),
             DatabaseType::Redis => Box::new(RedisProvider::new()),
-            _ => {
+            DatabaseType::SQLServer => {
                 self.set_status(format!(
                     "\"{}\" is {} (not yet supported).",
                     conn.name,
@@ -1055,17 +1050,20 @@ impl App {
                 }
             }
             PendingAction::ExportResults { format, filename } => {
-                let columns = self.query_columns.clone();
-                let rows = self.query_data.clone();
-                if columns.is_empty() || rows.is_empty() {
+                if self.query_columns.is_empty() || self.query_data.is_empty() {
                     self.set_status("No data to export.");
                     return;
                 }
-                match crate::export::export_data(format, &columns, &rows, &filename) {
+                match crate::export::export_data(
+                    format,
+                    &self.query_columns,
+                    &self.query_data,
+                    &filename,
+                ) {
                     Ok(()) => {
                         self.set_status(format!(
                             "Exported {} rows to {}",
-                            rows.len(),
+                            self.query_data.len(),
                             filename
                         ));
                     }
@@ -1111,15 +1109,6 @@ impl App {
                     self.query_text.clear();
                     self.query_editor = TextArea::default();
 
-                    for (schema_key, tables) in &tables_data {
-                        self.metadata_cache
-                            .set_tables(schema_key.clone(), tables.clone());
-                    }
-                    for (schema_key, views) in &views_data {
-                        self.metadata_cache
-                            .set_views(schema_key.clone(), views.clone());
-                    }
-
                     self.explorer_tree = crate::ui::sidebar::build_initial_tree(
                         &conn_name,
                         &databases,
@@ -1127,6 +1116,15 @@ impl App {
                         &tables_data,
                         &views_data,
                     );
+
+                    for (schema_key, tables) in tables_data {
+                        self.metadata_cache
+                            .set_tables(schema_key, tables);
+                    }
+                    for (schema_key, views) in views_data {
+                        self.metadata_cache
+                            .set_views(schema_key, views);
+                    }
 
                     // Update last_connected and persist
                     if let Some(saved) = self.connections.iter_mut().find(|c| c.id == id) {
@@ -1360,8 +1358,6 @@ impl App {
         if let Some(provider) = self.pool.get_active() {
             match provider.get_columns(table).await {
                 Ok(columns) => {
-                    self.metadata_cache
-                        .set_columns(table.to_string(), columns.clone());
                     let tree_id = format!("table:{}", table);
                     let child_items: Vec<crate::widgets::tree::TreeItem> = columns
                         .iter()
@@ -1373,8 +1369,11 @@ impl App {
                             )
                         })
                         .collect();
+                    let item_count = child_items.len();
+                    self.metadata_cache
+                        .set_columns(table.to_string(), columns);
                     self.explorer_tree.set_children(&tree_id, child_items);
-                    self.set_status(format!("Loaded {} items for \"{}\"", columns.len(), table));
+                    self.set_status(format!("Loaded {} items for \"{}\"", item_count, table));
                 }
                 Err(e) => {
                     self.set_status(format!("Failed to load items: {}", e));
@@ -1388,7 +1387,7 @@ impl App {
             match provider.get_columns(table).await {
                 Ok(columns) => {
                     self.metadata_cache
-                        .set_columns(table.to_string(), columns.clone());
+                        .set_columns(table.to_string(), columns);
                 }
                 Err(e) => {
                     self.set_status(format!("Failed to load items: {}", e));
@@ -1937,7 +1936,7 @@ impl App {
             KeyCode::End => {
                 self.inspector_edit_col = None;
                 if self.has_result_filter() {
-                    self.selected_row = *self.result_filtered_indices.last().unwrap();
+                    self.selected_row = self.result_filtered_indices.last().copied().unwrap_or(0);
                 } else {
                     self.selected_row = self.query_data.len().saturating_sub(1);
                 }
@@ -2421,7 +2420,7 @@ impl App {
             &parts,
             bson::Bson::String(new_val.clone()),
         );
-        self.set_status(format!("Value updated"));
+        self.set_status("Value updated".to_string());
     }
 
     fn mongo_mouse_to_line(&self, mouse_row: u16) -> Option<usize> {
@@ -3104,10 +3103,12 @@ impl App {
 
     fn auto_load_selected_table_columns(&mut self) {
         if let Some(id) = self.explorer_tree.selected_id() {
-            if id.starts_with("table:") && !id.ends_with(':') {
-                let table_name = id.strip_prefix("table:").unwrap().to_string();
-                if self.metadata_cache.get_columns(&table_name).is_none() {
-                    self.pending_action = PendingAction::CacheColumns { table: table_name };
+            if let Some(name) = id.strip_prefix("table:") {
+                if !id.ends_with(':') {
+                    let table_name = name.to_string();
+                    if self.metadata_cache.get_columns(&table_name).is_none() {
+                        self.pending_action = PendingAction::CacheColumns { table: table_name };
+                    }
                 }
             }
         }
@@ -3137,10 +3138,12 @@ impl App {
                 if let Some(ref id) = id {
                     let is_expanded = self.explorer_tree.is_item_expanded(id);
                     if !is_expanded {
-                        if id.starts_with("table:") && !id.ends_with(':') {
-                            let table_name = id.strip_prefix("table:").unwrap().to_string();
-                            self.pending_action = PendingAction::LoadColumns { table: table_name };
-                            self.explorer_tree.toggle_selected();
+                        if let Some(name) = id.strip_prefix("table:") {
+                            if !id.ends_with(':') {
+                                let table_name = name.to_string();
+                                self.pending_action = PendingAction::LoadColumns { table: table_name };
+                                self.explorer_tree.toggle_selected();
+                            }
                         } else {
                             self.explorer_tree.toggle_selected();
                         }
@@ -3172,64 +3175,63 @@ impl App {
             KeyCode::Enter => {
                 let id = self.explorer_tree.selected_id();
                 if let Some(ref id) = id {
-                    if id.starts_with("table:") && !id.ends_with(':') {
-                        let is_redis = self.active_db_type() == Some(DatabaseType::Redis);
-                        if is_redis {
-                            let table_name = id.strip_prefix("table:").unwrap();
-                            let parts: Vec<&str> = table_name.splitn(2, '.').collect();
-                            if parts.len() == 2 {
-                                let db_prefix = parts[0];
-                                let key_type = parts[1];
-                                let db_num = db_prefix.trim_start_matches("db");
-                                let db_num = if db_num.is_empty() { "0" } else { db_num };
-                                let base_cmd = match key_type {
-                                    "strings" => "SCAN 0 TYPE string COUNT 100".to_string(),
-                                    "hashes" => "SCAN 0 TYPE hash COUNT 100".to_string(),
-                                    "lists" => "SCAN 0 TYPE list COUNT 100".to_string(),
-                                    "sets" => "SCAN 0 TYPE set COUNT 100".to_string(),
-                                    "sorted_sets" => "SCAN 0 TYPE zset COUNT 100".to_string(),
-                                    "streams" => "SCAN 0 TYPE stream COUNT 100".to_string(),
-                                    _ => "SCAN 0 COUNT 100".to_string(),
-                                };
-                                let cmd = format!("SELECT {}\n{}", db_num, base_cmd);
-                                self.pending_action = PendingAction::OpenQuery(cmd);
-                            }
-                        } else {
-                            let table_name = id.strip_prefix("table:").unwrap();
-                            let (db_name, short) = match table_name.find('.') {
-                                Some(pos) => (&table_name[..pos], &table_name[pos + 1..]),
-                                None => ("", table_name),
-                            };
-                            let query = if self.active_db_type() == Some(DatabaseType::MongoDB) {
-                                if db_name.is_empty() {
-                                    format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
-                                } else {
-                                    format!(
-                                        "{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n",
-                                        db_name, short
-                                    )
+                    if let Some(name) = id.strip_prefix("table:") {
+                        if !id.ends_with(':') {
+                            let is_redis = self.active_db_type() == Some(DatabaseType::Redis);
+                            if is_redis {
+                                let parts: Vec<&str> = name.splitn(2, '.').collect();
+                                if parts.len() == 2 {
+                                    let db_prefix = parts[0];
+                                    let key_type = parts[1];
+                                    let db_num = db_prefix.trim_start_matches("db");
+                                    let db_num = if db_num.is_empty() { "0" } else { db_num };
+                                    let base_cmd = match key_type {
+                                        "strings" => "SCAN 0 TYPE string COUNT 100".to_string(),
+                                        "hashes" => "SCAN 0 TYPE hash COUNT 100".to_string(),
+                                        "lists" => "SCAN 0 TYPE list COUNT 100".to_string(),
+                                        "sets" => "SCAN 0 TYPE set COUNT 100".to_string(),
+                                        "sorted_sets" => "SCAN 0 TYPE zset COUNT 100".to_string(),
+                                        "streams" => "SCAN 0 TYPE stream COUNT 100".to_string(),
+                                        _ => "SCAN 0 COUNT 100".to_string(),
+                                    };
+                                    let cmd = format!("SELECT {}\n{}", db_num, base_cmd);
+                                    self.pending_action = PendingAction::OpenQuery(cmd);
                                 }
                             } else {
-                                let db_type = self.active_db_type();
-                                let q = if db_type == Some(DatabaseType::MySQL)
-                                    || db_type == Some(DatabaseType::MariaDB)
-                                {
-                                    '`'
-                                } else {
-                                    '"'
+                                let (db_name, short) = match name.find('.') {
+                                    Some(pos) => (&name[..pos], &name[pos + 1..]),
+                                    None => ("", name),
                                 };
-                                format!(
-                                    "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
-                                    q = q,
-                                    short = short
-                                )
-                            };
-                            self.pending_action = PendingAction::OpenQuery(query);
+                                let query = if self.active_db_type() == Some(DatabaseType::MongoDB) {
+                                    if db_name.is_empty() {
+                                        format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
+                                    } else {
+                                        format!(
+                                            "{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n",
+                                            db_name, short
+                                        )
+                                    }
+                                } else {
+                                    let db_type = self.active_db_type();
+                                    let q = if db_type == Some(DatabaseType::MySQL)
+                                        || db_type == Some(DatabaseType::MariaDB)
+                                    {
+                                        '`'
+                                    } else {
+                                        '"'
+                                    };
+                                    format!(
+                                        "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
+                                        q = q,
+                                        short = short
+                                    )
+                                };
+                                self.pending_action = PendingAction::OpenQuery(query);
+                            }
                         }
-                    } else if id.starts_with("column:") {
+                    } else if let Some(column_key) = id.strip_prefix("column:") {
                         let is_redis = self.active_db_type() == Some(DatabaseType::Redis);
                         if is_redis {
-                            let column_key = id.strip_prefix("column:").unwrap();
                             let parts: Vec<&str> = column_key.splitn(3, '.').collect();
                             if parts.len() == 3 {
                                 let db_prefix = parts[0];
@@ -3252,11 +3254,11 @@ impl App {
                                 self.pending_action = PendingAction::OpenQuery(cmd);
                             } else {
                                 self.current_page = Page::Explorer;
-                                self.set_status(format!("Viewing column details"));
+                                self.set_status("Viewing column details");
                             }
                         } else {
                             self.current_page = Page::Explorer;
-                            self.set_status(format!("Viewing column details"));
+                            self.set_status("Viewing column details");
                         }
                     } else if !id.ends_with(':') {
                         self.explorer_tree.toggle_selected();
@@ -3578,54 +3580,53 @@ impl App {
                         if is_double {
                             let id = self.explorer_tree.selected_id();
                             if let Some(ref id) = id {
-                                if id.starts_with("table:") && !id.ends_with(':') {
-                                    let is_redis = self.active_db_type()
-                                        == Some(DatabaseType::Redis);
-                                    if is_redis {
-                                        let table_name =
-                                            id.strip_prefix("table:").unwrap().to_string();
-                                        self.pending_action =
-                                            PendingAction::LoadColumns { table: table_name };
-                                        self.explorer_tree.toggle_selected();
-                                    } else {
-                                        let table_name = id.strip_prefix("table:").unwrap();
-                                        let (db_name, short) = match table_name.find('.') {
-                                            Some(pos) => {
-                                                (&table_name[..pos], &table_name[pos + 1..])
-                                            }
-                                            None => ("", table_name),
-                                        };
-                                        let query = if self.active_db_type()
-                                            == Some(DatabaseType::MongoDB)
-                                        {
-                                            if db_name.is_empty() {
-                                                format!(
-                                                    "{{ \"find\": \"{}\", \"limit\": 1000 }}\n",
-                                                    short
-                                                )
-                                            } else {
-                                                format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
-                                            }
+                                if let Some(name) = id.strip_prefix("table:") {
+                                    if !id.ends_with(':') {
+                                        let is_redis = self.active_db_type()
+                                            == Some(DatabaseType::Redis);
+                                        if is_redis {
+                                            self.pending_action =
+                                                PendingAction::LoadColumns { table: name.to_string() };
+                                            self.explorer_tree.toggle_selected();
                                         } else {
-                                            let db_type = self.active_db_type();
-                                            let q = if db_type == Some(DatabaseType::MySQL)
-                                                || db_type == Some(DatabaseType::MariaDB)
-                                            {
-                                                '`'
-                                            } else {
-                                                '"'
+                                            let (db_name, short) = match name.find('.') {
+                                                Some(pos) => {
+                                                    (&name[..pos], &name[pos + 1..])
+                                                }
+                                                None => ("", name),
                                             };
-                                            format!(
-                                                "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
-                                                q = q,
-                                                short = short
-                                            )
-                                        };
-                                        self.pending_action =
-                                            PendingAction::OpenQuery(query);
+                                            let query = if self.active_db_type()
+                                                == Some(DatabaseType::MongoDB)
+                                            {
+                                                if db_name.is_empty() {
+                                                    format!(
+                                                        "{{ \"find\": \"{}\", \"limit\": 1000 }}\n",
+                                                        short
+                                                    )
+                                                } else {
+                                                    format!("{{ \"db\": \"{}\", \"find\": \"{}\", \"limit\": 1000 }}\n", db_name, short)
+                                                }
+                                            } else {
+                                                let db_type = self.active_db_type();
+                                                let q = if db_type == Some(DatabaseType::MySQL)
+                                                    || db_type == Some(DatabaseType::MariaDB)
+                                                {
+                                                    '`'
+                                                } else {
+                                                    '"'
+                                                };
+                                                format!(
+                                                    "SELECT * FROM {q}{short}{q} LIMIT 1000 OFFSET 0;\n",
+                                                    q = q,
+                                                    short = short
+                                                )
+                                            };
+                                            self.pending_action =
+                                                PendingAction::OpenQuery(query);
+                                        }
+                                    } else {
+                                        self.explorer_tree.toggle_selected();
                                     }
-                                } else {
-                                    self.explorer_tree.toggle_selected();
                                 }
                             }
                         }
@@ -3808,12 +3809,11 @@ impl App {
     }
 
     fn conn_form_submit(&mut self) {
-        if let Some(form) = &self.conn_form {
+        if let Some(form) = &mut self.conn_form {
             if form.form_tab == FormTab::Uri {
                 match parse_connection_uri(&form.uri_input) {
                     Ok((db_type, host, port, database, username, password)) => {
-                        let f = self.conn_form.as_mut().unwrap();
-                        if f.name.is_empty() {
+                        if form.name.is_empty() {
                             let generated = if !username.is_empty() && !host.is_empty() {
                                 format!("{}@{}", username, host)
                             } else if !host.is_empty() {
@@ -3827,46 +3827,46 @@ impl App {
                             } else {
                                 db_type.display_name().to_string()
                             };
-                            f.name = generated;
+                            form.name = generated;
                         }
-                        f.db_type = db_type;
-                        f.host = host;
-                        f.port = port.to_string();
-                        f.database = database;
-                        f.username = username;
-                        f.password = password;
+                        form.db_type = db_type;
+                        form.host = host;
+                        form.port = port.to_string();
+                        form.database = database;
+                        form.username = username;
+                        form.password = password;
                     }
                     Err(e) => {
-                        self.conn_form.as_mut().unwrap().error = Some(e);
+                        form.error = Some(e);
                         return;
                     }
                 }
             }
         }
 
-        let form = match &self.conn_form {
-            Some(f) => f.clone(),
+        let config = match &self.conn_form {
+            Some(f) => {
+                if f.name.trim().is_empty() {
+                    if let Some(f) = &mut self.conn_form {
+                        f.error = Some("Name is required".to_string());
+                    }
+                    return;
+                }
+                let db_optional = matches!(f.db_type, DatabaseType::Redis | DatabaseType::MongoDB);
+                if f.database.trim().is_empty() && !db_optional {
+                    if let Some(f) = &mut self.conn_form {
+                        f.error = Some("Database is required".to_string());
+                    }
+                    return;
+                }
+                f.to_config()
+            }
             None => return,
         };
-
-        if form.name.trim().is_empty() {
-            if let Some(f) = &mut self.conn_form {
-                f.error = Some("Name is required".to_string());
-            }
-            return;
-        }
-        let db_optional = matches!(form.db_type, DatabaseType::Redis | DatabaseType::MongoDB);
-        if form.database.trim().is_empty() && !db_optional {
-            if let Some(f) = &mut self.conn_form {
-                f.error = Some("Database is required".to_string());
-            }
-            return;
-        }
-
-        let is_new = form.is_new;
-        let password_cleared = form.password.is_empty() && !is_new;
-
-        let config = form.to_config();
+        let is_new = self.conn_form.as_ref().map_or(false, |f| f.is_new);
+        let password_cleared = self.conn_form.as_ref().map_or(false, |f| {
+            f.password.is_empty() && !f.is_new
+        });
 
         if is_new {
             self.connections.push(config.clone());

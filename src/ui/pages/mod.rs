@@ -6,7 +6,7 @@ mod help;
 mod history;
 mod logs;
 mod query_editor;
-mod schema_browser;
+pub mod schema_browser;
 
 pub fn render(
     frame: &mut ratatui::Frame,

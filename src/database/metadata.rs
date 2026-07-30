@@ -4,10 +4,10 @@ use crate::database::types::{ColumnInfo, IndexInfo, TableInfo, ViewInfo};
 
 #[derive(Debug, Clone, Default)]
 pub struct MetadataCache {
-    pub tables: HashMap<String, Vec<TableInfo>>,
-    pub columns: HashMap<String, Vec<ColumnInfo>>,
-    pub views: HashMap<String, Vec<ViewInfo>>,
-    pub indexes: HashMap<String, Vec<IndexInfo>>,
+    pub(crate) tables: HashMap<String, Vec<TableInfo>>,
+    pub(crate) columns: HashMap<String, Vec<ColumnInfo>>,
+    pub(crate) views: HashMap<String, Vec<ViewInfo>>,
+    pub(crate) indexes: HashMap<String, Vec<IndexInfo>>,
 }
 
 impl MetadataCache {

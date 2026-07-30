@@ -54,7 +54,6 @@ impl AppConfig {
         Ok(dir)
     }
 
-    #[allow(dead_code)]
     pub fn data_dir() -> Result<PathBuf> {
         let dir = ProjectDirs::from("", "", "dbrusty")
             .map(|d| d.data_dir().to_path_buf())

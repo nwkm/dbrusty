@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use color_eyre::{eyre::Context, Result};
 use keyring::Entry;
 

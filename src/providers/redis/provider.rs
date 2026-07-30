@@ -19,18 +19,6 @@ const KEY_TYPES: &[&str] = &[
     "streams",
 ];
 
-fn redis_type_to_category(t: &str) -> Option<&'static str> {
-    match t {
-        "string" => Some("strings"),
-        "hash" => Some("hashes"),
-        "list" => Some("lists"),
-        "set" => Some("sets"),
-        "zset" => Some("sorted_sets"),
-        "stream" => Some("streams"),
-        _ => None,
-    }
-}
-
 fn category_to_redis_type(cat: &str) -> Option<&'static str> {
     match cat {
         "strings" => Some("string"),
@@ -198,9 +186,6 @@ impl RedisProvider {
         self.connection.as_ref().ok_or(DatabaseError::NotConnected)
     }
 
-    fn db_label(&self) -> String {
-        format!("db{}", self.db_index)
-    }
 }
 
 #[async_trait]

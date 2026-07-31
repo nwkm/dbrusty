@@ -8,7 +8,7 @@ use ratatui::{
 use crate::app::App;
 use crate::ui::sidebar;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let border_color = if focused { Color::Cyan } else { Color::White };
     let border = || Style::default().fg(border_color);
     if app.explorer_tree.is_empty() {

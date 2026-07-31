@@ -3,7 +3,6 @@
 /// SQLite is embedded (no external process needed). The default database
 /// is in-memory (`sqlite://:memory:`), so these tests always run unless
 /// overridden by setting DATABASE_PATH.
-
 use dbrusty::database::provider::DatabaseProvider;
 use dbrusty::models::connection::{ConnectionConfig, DatabaseType};
 use dbrusty::providers::sqlite::SqliteProvider;
@@ -118,7 +117,10 @@ async fn test_sqlite_get_columns() {
         ))
         .await
         .unwrap();
-    let columns = provider.get_columns(&format!("main.{}", tbl)).await.unwrap();
+    let columns = provider
+        .get_columns(&format!("main.{}", tbl))
+        .await
+        .unwrap();
     assert!(columns.iter().any(|c| c.name == "id" && c.is_pk));
     assert!(columns.iter().any(|c| c.name == "label" && !c.nullable));
     assert!(columns.iter().any(|c| c.name == "active"));

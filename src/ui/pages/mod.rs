@@ -4,7 +4,7 @@ mod explorer;
 mod favorites;
 mod help;
 mod history;
-mod logs;
+pub mod logs;
 mod query_editor;
 pub mod schema_browser;
 
@@ -12,7 +12,7 @@ pub fn render(
     frame: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
     page: crate::app::Page,
-    app: &crate::app::App,
+    app: &mut crate::app::App,
     focused: bool,
 ) {
     match page {

@@ -614,20 +614,19 @@ impl DatabaseProvider for MariadbProvider {
         })
     }
 
-    async fn get_create_table_ddl(
-        &self,
-        schema: &str,
-        table: &str,
-    ) -> DatabaseResult<String> {
+    async fn get_create_table_ddl(&self, schema: &str, table: &str) -> DatabaseResult<String> {
         let pool = self.pool()?;
         let sql = format!("SHOW CREATE TABLE `{}`.`{}`", schema, table);
         let row = sqlx::query(&sql)
             .fetch_one(pool)
             .await
             .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
-        let create_table: String = row.try_get("Create Table")
+        let create_table: String = row
+            .try_get("Create Table")
             .or_else(|_| row.try_get(1))
-            .map_err(|_| DatabaseError::Metadata("Could not read SHOW CREATE TABLE result".into()))?;
+            .map_err(|_| {
+                DatabaseError::Metadata("Could not read SHOW CREATE TABLE result".into())
+            })?;
         Ok(format!("{};", create_table.trim()))
     }
 
@@ -638,9 +637,12 @@ impl DatabaseProvider for MariadbProvider {
             .fetch_one(pool)
             .await
             .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
-        let create_view: String = row.try_get("Create View")
+        let create_view: String = row
+            .try_get("Create View")
             .or_else(|_| row.try_get(1))
-            .map_err(|_| DatabaseError::Metadata("Could not read SHOW CREATE VIEW result".into()))?;
+            .map_err(|_| {
+                DatabaseError::Metadata("Could not read SHOW CREATE VIEW result".into())
+            })?;
         Ok(format!("{};", create_view.trim()))
     }
 
@@ -656,7 +658,8 @@ impl DatabaseProvider for MariadbProvider {
         .fetch_all(pool)
         .await?;
         for r in &table_rows {
-            let tbl: String = r.try_get("TABLE_NAME")
+            let tbl: String = r
+                .try_get("TABLE_NAME")
                 .or_else(|_| r.try_get(0))
                 .unwrap_or_default();
             if let Ok(ddl) = self.get_create_table_ddl(schema, &tbl).await {
@@ -672,7 +675,8 @@ impl DatabaseProvider for MariadbProvider {
         .fetch_all(pool)
         .await?;
         for r in &view_rows {
-            let vw: String = r.try_get("TABLE_NAME")
+            let vw: String = r
+                .try_get("TABLE_NAME")
                 .or_else(|_| r.try_get(0))
                 .unwrap_or_default();
             if let Ok(ddl) = self.get_create_view_ddl(schema, &vw).await {
@@ -688,12 +692,14 @@ impl DatabaseProvider for MariadbProvider {
         .fetch_all(pool)
         .await?;
         for r in &trig_rows {
-            let tn: String = r.try_get("TRIGGER_NAME")
+            let tn: String = r
+                .try_get("TRIGGER_NAME")
                 .or_else(|_| r.try_get(0))
                 .unwrap_or_default();
             let sql = format!("SHOW CREATE TRIGGER `{}`.`{}`", schema, tn);
             if let Ok(row) = sqlx::query(&sql).fetch_one(pool).await {
-                if let Ok(trig_ddl) = row.try_get::<String, _>("Create Trigger")
+                if let Ok(trig_ddl) = row
+                    .try_get::<String, _>("Create Trigger")
                     .or_else(|_| row.try_get(1))
                 {
                     parts.push(format!("{};", trig_ddl.trim()));
@@ -709,15 +715,18 @@ impl DatabaseProvider for MariadbProvider {
         .fetch_all(pool)
         .await?;
         for r in &func_rows {
-            let rn: String = r.try_get("ROUTINE_NAME")
+            let rn: String = r
+                .try_get("ROUTINE_NAME")
                 .or_else(|_| r.try_get(0))
                 .unwrap_or_default();
             let sql = format!("SHOW CREATE FUNCTION `{}`.`{}`", schema, rn);
             if let Ok(row) = sqlx::query(&sql).fetch_one(pool).await {
-                let field = if row.try_get::<String, _>(0).is_ok() { "Create Function" } else { "Create Procedure" };
-                if let Ok(ddl) = row.try_get::<String, _>(field)
-                    .or_else(|_| row.try_get(2))
-                {
+                let field = if row.try_get::<String, _>(0).is_ok() {
+                    "Create Function"
+                } else {
+                    "Create Procedure"
+                };
+                if let Ok(ddl) = row.try_get::<String, _>(field).or_else(|_| row.try_get(2)) {
                     parts.push(format!("{};", ddl.trim()));
                 }
             }
@@ -756,14 +765,16 @@ impl DatabaseProvider for MariadbProvider {
             let ref_col: String = col_str(r, "REFERENCED_COLUMN_NAME");
             let up_rule: String = col_str(r, "UPDATE_RULE");
             let del_rule: String = col_str(r, "DELETE_RULE");
-            let entry = fk_map.entry(cname.clone()).or_insert_with(|| ForeignKeyInfo {
-                name: cname,
-                columns: Vec::new(),
-                ref_table: ref_tbl,
-                ref_columns: Vec::new(),
-                update_rule: Some(up_rule),
-                delete_rule: Some(del_rule),
-            });
+            let entry = fk_map
+                .entry(cname.clone())
+                .or_insert_with(|| ForeignKeyInfo {
+                    name: cname,
+                    columns: Vec::new(),
+                    ref_table: ref_tbl,
+                    ref_columns: Vec::new(),
+                    update_rule: Some(up_rule),
+                    delete_rule: Some(del_rule),
+                });
             entry.columns.push(col);
             entry.ref_columns.push(ref_col);
         }

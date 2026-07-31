@@ -185,7 +185,6 @@ impl RedisProvider {
     fn conn(&self) -> DatabaseResult<&MultiplexedConnection> {
         self.connection.as_ref().ok_or(DatabaseError::NotConnected)
     }
-
 }
 
 #[async_trait]
@@ -210,7 +209,10 @@ impl DatabaseProvider for RedisProvider {
             format!("redis://{}:{}/{}", config.host, config.port, db)
         } else if config.username.is_empty() {
             let encoded: String = percent_encode(pw.as_bytes(), NON_ALPHANUMERIC).to_string();
-            format!("redis://:{}@{}:{}/{}", encoded, config.host, config.port, db)
+            format!(
+                "redis://:{}@{}:{}/{}",
+                encoded, config.host, config.port, db
+            )
         } else {
             let encoded: String = percent_encode(pw.as_bytes(), NON_ALPHANUMERIC).to_string();
             format!(

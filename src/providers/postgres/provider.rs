@@ -703,11 +703,7 @@ impl DatabaseProvider for PostgresProvider {
         })
     }
 
-    async fn get_create_table_ddl(
-        &self,
-        schema: &str,
-        table: &str,
-    ) -> DatabaseResult<String> {
+    async fn get_create_table_ddl(&self, schema: &str, table: &str) -> DatabaseResult<String> {
         let pool = self.pool()?;
 
         // Get columns
@@ -732,7 +728,11 @@ impl DatabaseProvider for PostgresProvider {
         .await?;
 
         let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("CREATE TABLE {}.\"{}\" (", quote_pg_id(schema), table));
+        lines.push(format!(
+            "CREATE TABLE {}.\"{}\" (",
+            quote_pg_id(schema),
+            table
+        ));
 
         let mut col_parts: Vec<String> = Vec::new();
         for row in &col_rows {
@@ -837,7 +837,12 @@ impl DatabaseProvider for PostgresProvider {
         .await?
         .ok_or_else(|| DatabaseError::Metadata(format!("View \"{schema}.{view}\" not found")))?;
         let def: String = row.get("view_definition");
-        Ok(format!("CREATE VIEW {}.\"{}\" AS\n{};", quote_pg_id(schema), view, def))
+        Ok(format!(
+            "CREATE VIEW {}.\"{}\" AS\n{};",
+            quote_pg_id(schema),
+            view,
+            def
+        ))
     }
 
     async fn get_full_schema_ddl(&self, schema: &str) -> DatabaseResult<String> {
@@ -867,9 +872,18 @@ impl DatabaseProvider for PostgresProvider {
             let dt: String = r.get("data_type");
             let sv: Option<i64> = r.get("start_value");
             let inc: Option<i64> = r.get("increment");
-            let mut s = format!("CREATE SEQUENCE {}.\"{}\" AS {}", quote_pg_id(schema), name, dt);
-            if let Some(v) = sv { s.push_str(&format!(" START WITH {}", v)); }
-            if let Some(v) = inc { s.push_str(&format!(" INCREMENT BY {}", v)); }
+            let mut s = format!(
+                "CREATE SEQUENCE {}.\"{}\" AS {}",
+                quote_pg_id(schema),
+                name,
+                dt
+            );
+            if let Some(v) = sv {
+                s.push_str(&format!(" START WITH {}", v));
+            }
+            if let Some(v) = inc {
+                s.push_str(&format!(" INCREMENT BY {}", v));
+            }
             s.push(';');
             parts.push(s);
         }
@@ -899,7 +913,11 @@ impl DatabaseProvider for PostgresProvider {
         .await?;
         for r in &idx_rows {
             let def: String = r.get("indexdef");
-            let def = if !def.ends_with(';') { format!("{def};") } else { def };
+            let def = if !def.ends_with(';') {
+                format!("{def};")
+            } else {
+                def
+            };
             parts.push(def);
         }
 
@@ -974,14 +992,16 @@ impl DatabaseProvider for PostgresProvider {
             let ref_col: String = row.get("ref_column");
             let up_rule: String = row.get("update_rule");
             let del_rule: String = row.get("delete_rule");
-            let entry = fk_map.entry(cname.clone()).or_insert_with(|| ForeignKeyInfo {
-                name: cname,
-                columns: Vec::new(),
-                ref_table: ref_tbl,
-                ref_columns: Vec::new(),
-                update_rule: Some(up_rule),
-                delete_rule: Some(del_rule),
-            });
+            let entry = fk_map
+                .entry(cname.clone())
+                .or_insert_with(|| ForeignKeyInfo {
+                    name: cname,
+                    columns: Vec::new(),
+                    ref_table: ref_tbl,
+                    ref_columns: Vec::new(),
+                    update_rule: Some(up_rule),
+                    delete_rule: Some(del_rule),
+                });
             entry.columns.push(col);
             entry.ref_columns.push(ref_col);
         }

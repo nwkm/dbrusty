@@ -75,11 +75,7 @@ pub trait DatabaseProvider: Send + Sync {
 
     // ── DDL generation (provider-specific) ──
 
-    async fn get_create_table_ddl(
-        &self,
-        _schema: &str,
-        _table: &str,
-    ) -> DatabaseResult<String> {
+    async fn get_create_table_ddl(&self, _schema: &str, _table: &str) -> DatabaseResult<String> {
         Err(DatabaseError::Metadata(
             "DDL generation not supported for this provider".into(),
         ))

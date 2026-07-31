@@ -346,7 +346,7 @@ fn build_hints(app: &App) -> String {
     )
 }
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let vertical = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]);
     let [list_area, key_hints_area] = vertical.areas(area);
 

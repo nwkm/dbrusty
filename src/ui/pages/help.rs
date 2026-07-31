@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::App;
 
-pub fn render(frame: &mut Frame, area: Rect, _app: &App, focused: bool) {
+pub fn render(frame: &mut Frame, area: Rect, _app: &mut App, focused: bool) {
     let border_color = if focused { Color::Cyan } else { Color::White };
     let block = Block::default()
         .title(" Help & Keybindings ")

@@ -24,10 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     seed_db4_sorted_sets(&conn).await?;
     seed_db5_streams(&conn).await?;
 
-    println!(
-        "\nDone — seeded 6 Redis databases in {:?}",
-        start.elapsed()
-    );
+    println!("\nDone — seeded 6 Redis databases in {:?}", start.elapsed());
     Ok(())
 }
 
@@ -101,9 +98,24 @@ async fn seed_db1_hashes(conn: &MultiplexedConnection) -> Result<(), Box<dyn std
     }
 
     let sessions = [
-        ("sess:abc123", "user:1", "2024-06-01T10:00:00Z", "192.168.1.1"),
-        ("sess:def456", "user:2", "2024-06-01T10:05:00Z", "192.168.1.2"),
-        ("sess:ghi789", "user:3", "2024-06-01T10:10:00Z", "192.168.1.3"),
+        (
+            "sess:abc123",
+            "user:1",
+            "2024-06-01T10:00:00Z",
+            "192.168.1.1",
+        ),
+        (
+            "sess:def456",
+            "user:2",
+            "2024-06-01T10:05:00Z",
+            "192.168.1.2",
+        ),
+        (
+            "sess:ghi789",
+            "user:3",
+            "2024-06-01T10:10:00Z",
+            "192.168.1.3",
+        ),
     ];
     for (sid, uid, login, ip) in &sessions {
         redis::cmd("HSET")
@@ -126,7 +138,16 @@ async fn seed_db2_lists(conn: &MultiplexedConnection) -> Result<(), Box<dyn std:
     let mut conn = conn.clone();
     select(&mut conn, 2).await?;
 
-    let jobs = ["process_payments", "send_emails", "generate_reports", "sync_data", "backup_db", "cleanup_logs", "update_indexes", "run_analytics"];
+    let jobs = [
+        "process_payments",
+        "send_emails",
+        "generate_reports",
+        "sync_data",
+        "backup_db",
+        "cleanup_logs",
+        "update_indexes",
+        "run_analytics",
+    ];
     for job in &jobs {
         redis::cmd("RPUSH")
             .arg("queue:jobs")
@@ -163,7 +184,28 @@ async fn seed_db3_sets(conn: &MultiplexedConnection) -> Result<(), Box<dyn std::
     let mut conn = conn.clone();
     select(&mut conn, 3).await?;
 
-    let tags = ["rust", "redis", "tui", "database", "cli", "terminal", "async", "tokio", "ratatui", "crossterm", "sql", "nosql", "postgres", "mysql", "mongodb", "sqlite", "mariadb", "performance", "tools", "devops"];
+    let tags = [
+        "rust",
+        "redis",
+        "tui",
+        "database",
+        "cli",
+        "terminal",
+        "async",
+        "tokio",
+        "ratatui",
+        "crossterm",
+        "sql",
+        "nosql",
+        "postgres",
+        "mysql",
+        "mongodb",
+        "sqlite",
+        "mariadb",
+        "performance",
+        "tools",
+        "devops",
+    ];
     for tag in &tags {
         redis::cmd("SADD")
             .arg("tags:dbrusty")
@@ -184,7 +226,9 @@ async fn seed_db3_sets(conn: &MultiplexedConnection) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-async fn seed_db4_sorted_sets(conn: &MultiplexedConnection) -> Result<(), Box<dyn std::error::Error>> {
+async fn seed_db4_sorted_sets(
+    conn: &MultiplexedConnection,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("  Seeding db4 (sorted sets) ...");
     let mut conn = conn.clone();
     select(&mut conn, 4).await?;
@@ -241,11 +285,30 @@ async fn seed_db5_streams(conn: &MultiplexedConnection) -> Result<(), Box<dyn st
     select(&mut conn, 5).await?;
 
     let events = [
-        ("event:login", &[("user", "alice"), ("ip", "192.168.1.1"), ("device", "desktop")] as &[(&str, &str)]),
-        ("event:purchase", &[("user", "bob"), ("item", "widget-123"), ("amount", "29.99")]),
-        ("event:logout", &[("user", "alice"), ("session_ms", "3600000")]),
-        ("event:signup", &[("user", "charlie"), ("referrer", "docs.example.com")]),
-        ("event:error", &[("service", "api"), ("code", "500"), ("path", "/users")]),
+        (
+            "event:login",
+            &[
+                ("user", "alice"),
+                ("ip", "192.168.1.1"),
+                ("device", "desktop"),
+            ] as &[(&str, &str)],
+        ),
+        (
+            "event:purchase",
+            &[("user", "bob"), ("item", "widget-123"), ("amount", "29.99")],
+        ),
+        (
+            "event:logout",
+            &[("user", "alice"), ("session_ms", "3600000")],
+        ),
+        (
+            "event:signup",
+            &[("user", "charlie"), ("referrer", "docs.example.com")],
+        ),
+        (
+            "event:error",
+            &[("service", "api"), ("code", "500"), ("path", "/users")],
+        ),
     ];
     for (stream, fields) in &events {
         let mut cmd = redis::Cmd::new();

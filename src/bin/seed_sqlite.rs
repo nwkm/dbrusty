@@ -372,13 +372,11 @@ const CATEGORIES: &[(&str, &str)] = &[
 async fn seed_categories(pool: &SqlitePool) -> Result<usize, sqlx::Error> {
     println!("  Seeding seed_categories ...");
     for (name, desc) in CATEGORIES {
-        sqlx::query(
-            "INSERT OR IGNORE INTO seed_categories (name, description) VALUES (?, ?)",
-        )
-        .bind(name)
-        .bind(desc)
-        .execute(pool)
-        .await?;
+        sqlx::query("INSERT OR IGNORE INTO seed_categories (name, description) VALUES (?, ?)")
+            .bind(name)
+            .bind(desc)
+            .execute(pool)
+            .await?;
     }
     Ok(CATEGORIES.len())
 }

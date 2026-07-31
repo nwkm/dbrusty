@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::database::types::{ColumnInfo, IndexInfo, TableInfo, ViewInfo};
+use crate::database::types::{
+    ColumnInfo, FunctionInfo, IndexInfo, ProcedureInfo, SequenceInfo, TableInfo, TriggerInfo,
+    ViewInfo,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct MetadataCache {
@@ -8,6 +11,10 @@ pub struct MetadataCache {
     pub(crate) columns: HashMap<String, Vec<ColumnInfo>>,
     pub(crate) views: HashMap<String, Vec<ViewInfo>>,
     pub(crate) indexes: HashMap<String, Vec<IndexInfo>>,
+    pub(crate) sequences: HashMap<String, Vec<SequenceInfo>>,
+    pub(crate) triggers: HashMap<String, Vec<TriggerInfo>>,
+    pub(crate) functions: HashMap<String, Vec<FunctionInfo>>,
+    pub(crate) procedures: HashMap<String, Vec<ProcedureInfo>>,
 }
 
 impl MetadataCache {
@@ -33,5 +40,21 @@ impl MetadataCache {
 
     pub fn set_indexes(&mut self, table: String, indexes: Vec<IndexInfo>) {
         self.indexes.insert(table, indexes);
+    }
+
+    pub fn set_sequences(&mut self, schema: String, sequences: Vec<SequenceInfo>) {
+        self.sequences.insert(schema, sequences);
+    }
+
+    pub fn set_triggers(&mut self, schema: String, triggers: Vec<TriggerInfo>) {
+        self.triggers.insert(schema, triggers);
+    }
+
+    pub fn set_functions(&mut self, schema: String, functions: Vec<FunctionInfo>) {
+        self.functions.insert(schema, functions);
+    }
+
+    pub fn set_procedures(&mut self, schema: String, procedures: Vec<ProcedureInfo>) {
+        self.procedures.insert(schema, procedures);
     }
 }

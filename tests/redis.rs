@@ -115,10 +115,7 @@ async fn test_redis_get_columns_strings() {
         .await
         .unwrap();
 
-    let columns = provider
-        .get_columns(&format!("db0.strings"))
-        .await
-        .unwrap();
+    let columns = provider.get_columns(&format!("db0.strings")).await.unwrap();
     assert!(
         columns.iter().any(|c| c.name == k),
         "should find our string key"
@@ -127,19 +124,13 @@ async fn test_redis_get_columns_strings() {
     assert_eq!(col.is_pk, true, "Redis keys should have is_pk=true");
     assert!(col.type_name.contains("string"), "type should be string");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
 async fn test_redis_get_columns_empty_type() {
     let provider = ensure_provider(&get_config().unwrap()).await;
-    let columns = provider
-        .get_columns("db0.nonexistent_type")
-        .await
-        .unwrap();
+    let columns = provider.get_columns("db0.nonexistent_type").await.unwrap();
     assert!(columns.is_empty(), "unknown type should return empty list");
 }
 
@@ -179,18 +170,12 @@ async fn test_redis_set_get() {
     assert_eq!(set_result.row_count(), 1);
     assert_eq!(set_result.rows[0][0].to_string(), "OK");
 
-    let get_result = provider
-        .execute_query(&format!("GET {}", k))
-        .await
-        .unwrap();
+    let get_result = provider.execute_query(&format!("GET {}", k)).await.unwrap();
     assert!(get_result.is_select, "GET should be is_select");
     assert_eq!(get_result.row_count(), 1);
     assert!(get_result.rows[0][0].to_string().contains("hello"));
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -210,17 +195,17 @@ async fn test_redis_append() {
     let provider = ensure_provider(&get_config().unwrap()).await;
     let k = key_name("append");
 
-    provider.execute_query(&format!("SET {} hello", k)).await.unwrap();
+    provider
+        .execute_query(&format!("SET {} hello", k))
+        .await
+        .unwrap();
     let r = provider
         .execute_query(&format!("APPEND {} world", k))
         .await
         .unwrap();
     assert!(!r.is_select, "APPEND should be execute");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 // ── Query execution: hashes ──────────────────────────────────────
@@ -239,18 +224,28 @@ async fn test_redis_hset_hgetall() {
         .await
         .unwrap();
 
-    let r = provider.execute_query(&format!("HGETALL {}", k)).await.unwrap();
-    assert!(r.is_select);
-    assert_eq!(r.col_count(), 2, "HGETALL should have 2 columns (field, value)");
-    assert_eq!(r.row_count(), 2, "should have 2 rows for name and age");
-    let names: Vec<String> = r.rows.iter().map(|row| row[0].to_string()).collect();
-    assert!(names.contains(&"name".to_string()), "should contain 'name' field");
-    assert!(names.contains(&"age".to_string()), "should contain 'age' field");
-
-    provider
-        .execute_query(&format!("DEL {}", k))
+    let r = provider
+        .execute_query(&format!("HGETALL {}", k))
         .await
         .unwrap();
+    assert!(r.is_select);
+    assert_eq!(
+        r.col_count(),
+        2,
+        "HGETALL should have 2 columns (field, value)"
+    );
+    assert_eq!(r.row_count(), 2, "should have 2 rows for name and age");
+    let names: Vec<String> = r.rows.iter().map(|row| row[0].to_string()).collect();
+    assert!(
+        names.contains(&"name".to_string()),
+        "should contain 'name' field"
+    );
+    assert!(
+        names.contains(&"age".to_string()),
+        "should contain 'age' field"
+    );
+
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -262,14 +257,14 @@ async fn test_redis_hget() {
         .execute_query(&format!("HSET {} field value", k))
         .await
         .unwrap();
-    let r = provider.execute_query(&format!("HGET {} field", k)).await.unwrap();
+    let r = provider
+        .execute_query(&format!("HGET {} field", k))
+        .await
+        .unwrap();
     assert!(r.is_select);
     assert_eq!(r.rows[0][0].to_string(), "value");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -288,10 +283,7 @@ async fn test_redis_hdel() {
     assert!(!r.is_select, "HDEL should be execute");
     assert_eq!(r.rows_affected, 1, "HDEL should affect 1 row");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 // ── Query execution: lists ───────────────────────────────────────
@@ -315,10 +307,7 @@ async fn test_redis_lpush_lrange() {
     assert!(r.is_select);
     assert_eq!(r.row_count(), 3, "LRANGE should return 3 items");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -330,14 +319,14 @@ async fn test_redis_llen() {
         .execute_query(&format!("LPUSH {} x y z", k))
         .await
         .unwrap();
-    let r = provider.execute_query(&format!("LLEN {}", k)).await.unwrap();
+    let r = provider
+        .execute_query(&format!("LLEN {}", k))
+        .await
+        .unwrap();
     assert!(r.is_select, "LLEN should be select");
     assert_eq!(r.rows[0][0].to_string(), "3");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 // ── Query execution: sets ────────────────────────────────────────
@@ -354,14 +343,14 @@ async fn test_redis_sadd_smembers() {
     assert!(!r.is_select, "SADD should be execute");
     assert_eq!(r.rows_affected, 3);
 
-    let r = provider.execute_query(&format!("SMEMBERS {}", k)).await.unwrap();
+    let r = provider
+        .execute_query(&format!("SMEMBERS {}", k))
+        .await
+        .unwrap();
     assert!(r.is_select);
     assert_eq!(r.row_count(), 3, "SMEMBERS should return 3 members");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -380,10 +369,7 @@ async fn test_redis_srem() {
     assert!(!r.is_select, "SREM should be execute");
     assert_eq!(r.rows_affected, 1);
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 // ── Query execution: sorted sets ─────────────────────────────────
@@ -407,10 +393,7 @@ async fn test_redis_zadd_zrange() {
     assert!(r.is_select);
     assert_eq!(r.row_count(), 3, "ZRANGE should return 3 members");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -430,10 +413,7 @@ async fn test_redis_zrange_withscores() {
     assert_eq!(r.col_count(), 2, "WITHSCORES should have 2 columns");
     assert_eq!(r.row_count(), 2, "WITHSCORES should return 2 pairs");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -452,10 +432,7 @@ async fn test_redis_zrem() {
     assert!(!r.is_select, "ZREM should be execute");
     assert_eq!(r.rows_affected, 1);
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 // ── Query execution: streams ─────────────────────────────────────
@@ -482,10 +459,7 @@ async fn test_redis_xadd_xrange() {
     assert_eq!(r.col_count(), 3, "XRANGE should have 3 columns");
     assert_eq!(r.row_count(), 2, "XRANGE should return 2 field-value pairs");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -505,10 +479,7 @@ async fn test_redis_xdel() {
     assert!(!r.is_select, "XDEL should be execute");
     assert_eq!(r.rows_affected, 1);
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 // ── Query execution: general ─────────────────────────────────────
@@ -522,10 +493,7 @@ async fn test_redis_del_execute() {
         .execute_query(&format!("SET {} val", k))
         .await
         .unwrap();
-    let r = provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    let r = provider.execute_query(&format!("DEL {}", k)).await.unwrap();
     assert!(!r.is_select, "DEL should be execute");
     assert_eq!(r.rows_affected, 1, "DEL should affect 1 row");
 }
@@ -546,10 +514,7 @@ async fn test_redis_exists() {
     assert!(!r.is_select, "EXISTS should be execute");
     assert_eq!(r.rows_affected, 1, "EXISTS should show key exists");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
     let r = provider
         .execute_query(&format!("EXISTS {}", k))
         .await
@@ -563,7 +528,10 @@ async fn test_redis_incr() {
     let provider = ensure_provider(&get_config().unwrap()).await;
     let k = key_name("counter");
 
-    provider.execute_query(&format!("SET {} 0", k)).await.unwrap();
+    provider
+        .execute_query(&format!("SET {} 0", k))
+        .await
+        .unwrap();
     let r = provider
         .execute_query(&format!("INCR {}", k))
         .await
@@ -577,10 +545,7 @@ async fn test_redis_incr() {
         .unwrap();
     assert_eq!(r.rows[0][0].to_string(), "2");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -628,10 +593,7 @@ async fn test_redis_multi_line() {
     assert_eq!(r.row_count(), 1);
     assert!(r.rows[0][0].to_string().contains("hello"));
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 #[tokio::test]
@@ -643,14 +605,14 @@ async fn test_redis_type() {
         .execute_query(&format!("SET {} str", k))
         .await
         .unwrap();
-    let r = provider.execute_query(&format!("TYPE {}", k)).await.unwrap();
+    let r = provider
+        .execute_query(&format!("TYPE {}", k))
+        .await
+        .unwrap();
     assert!(r.is_select);
     assert_eq!(r.rows[0][0].to_string(), "string");
 
-    provider
-        .execute_query(&format!("DEL {}", k))
-        .await
-        .unwrap();
+    provider.execute_query(&format!("DEL {}", k)).await.unwrap();
 }
 
 // ── Error handling ───────────────────────────────────────────────

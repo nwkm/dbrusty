@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{App, Focus, SchemaBrowserCategory, SchemaBrowserMode};
 use crate::database::types::ColumnInfo;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let border_color = if focused { Color::Cyan } else { Color::White };
     let block = Block::default()
         .title(" Schema Browser ")
@@ -24,6 +24,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         frame.render_widget(text, inner);
         return;
     }
+
+    // Split: main content + hints line at bottom
+    let vertical = Layout::vertical([Constraint::Min(2), Constraint::Length(1)]);
+    let [content_area, hints_area] = vertical.areas(inner);
 
     let show_create = app.schema_browser.mode == SchemaBrowserMode::CreatingTable;
     let show_drop = matches!(
@@ -43,10 +47,25 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     let show_diff = app.schema_browser.mode == SchemaBrowserMode::SchemaDiff;
 
     let horizontal = Layout::horizontal([Constraint::Ratio(1, 4), Constraint::Ratio(3, 4)]);
-    let [cat_area, detail_area] = horizontal.areas(inner);
+    let [cat_area, detail_area] = horizontal.areas(content_area);
 
     render_categories(frame, cat_area, app, focused);
     render_detail(frame, detail_area, app, focused);
+
+    // Keyboard hints
+    let hints = match app.schema_browser.mode {
+        SchemaBrowserMode::Browse => {
+            " j/k:Categories  h/l:Items  n:Create  d:Drop  r:Rename  a:Alter  E:Export DDL  s:Diff "
+        }
+        SchemaBrowserMode::CreatingTable => " Tab:Next field  Enter:Create  Esc:Cancel ",
+        SchemaBrowserMode::DroppingTable(_) => " y:Confirm  n:Cancel ",
+        SchemaBrowserMode::RenamingTable(_) => " Enter:Confirm  Esc:Cancel ",
+        SchemaBrowserMode::AlteringTable(_) => " Tab:Next  h/l:Action  Enter:Confirm  Esc:Cancel ",
+        SchemaBrowserMode::ImportingSchema => " Enter:Execute  Esc:Cancel ",
+        SchemaBrowserMode::SchemaDiff => " j/k:Scroll  s:Reset  Esc:Close ",
+    };
+    let hints_line = Line::from(Span::styled(hints, Style::default().fg(Color::DarkGray)));
+    frame.render_widget(Paragraph::new(hints_line), hints_area);
 
     if show_create {
         render_create_table_modal(frame, area, app);
@@ -131,7 +150,6 @@ fn get_category_count(app: &App, cat: &SchemaBrowserCategory) -> usize {
         SchemaBrowserCategory::Tables => app.metadata_cache.tables.values().map(|v| v.len()).sum(),
         SchemaBrowserCategory::Views => app.metadata_cache.views.values().map(|v| v.len()).sum(),
         SchemaBrowserCategory::Indexes => {
-            // Count indexes from cache
             let mut total = 0;
             for tables in app.metadata_cache.tables.values() {
                 for t in tables {
@@ -143,7 +161,21 @@ fn get_category_count(app: &App, cat: &SchemaBrowserCategory) -> usize {
             }
             total
         }
-        _ => 0,
+        SchemaBrowserCategory::Sequences => {
+            app.metadata_cache.sequences.values().map(|v| v.len()).sum()
+        }
+        SchemaBrowserCategory::Triggers => {
+            app.metadata_cache.triggers.values().map(|v| v.len()).sum()
+        }
+        SchemaBrowserCategory::Functions => {
+            app.metadata_cache.functions.values().map(|v| v.len()).sum()
+        }
+        SchemaBrowserCategory::Procedures => app
+            .metadata_cache
+            .procedures
+            .values()
+            .map(|v| v.len())
+            .sum(),
     }
 }
 
@@ -212,7 +244,50 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
             v.sort();
             v
         }
-        _ => Vec::new(),
+        SchemaBrowserCategory::Sequences => {
+            let mut v: Vec<String> = app
+                .metadata_cache
+                .sequences
+                .values()
+                .flat_map(|seqs| seqs.iter().map(|s| s.name.clone()))
+                .collect();
+            v.sort();
+            v
+        }
+        SchemaBrowserCategory::Triggers => {
+            let mut v: Vec<String> = app
+                .metadata_cache
+                .triggers
+                .values()
+                .flat_map(|triggers| {
+                    triggers
+                        .iter()
+                        .map(|t| format!("{} (on {})", t.name, t.table))
+                })
+                .collect();
+            v.sort();
+            v
+        }
+        SchemaBrowserCategory::Functions => {
+            let mut v: Vec<String> = app
+                .metadata_cache
+                .functions
+                .values()
+                .flat_map(|funcs| funcs.iter().map(|f| f.name.clone()))
+                .collect();
+            v.sort();
+            v
+        }
+        SchemaBrowserCategory::Procedures => {
+            let mut v: Vec<String> = app
+                .metadata_cache
+                .procedures
+                .values()
+                .flat_map(|procs| procs.iter().map(|p| p.name.clone()))
+                .collect();
+            v.sort();
+            v
+        }
     };
 
     if items.is_empty() {
@@ -299,6 +374,18 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
                 })
                 .collect();
             (lines, Style::default().fg(Color::Green))
+        } else if let Some(detail) = get_item_detail(app, cat, item_name) {
+            // Detail info for Sequences, Triggers, Functions, Procedures
+            let lines: Vec<Line> = detail
+                .lines()
+                .map(|l| {
+                    Line::from(Span::styled(
+                        l.to_string(),
+                        Style::default().fg(Color::Cyan),
+                    ))
+                })
+                .collect();
+            (lines, Style::default().fg(Color::Cyan))
         } else {
             let cols = get_item_columns(app, item_name);
             if cols.is_empty() {
@@ -352,6 +439,94 @@ fn get_item_columns(app: &App, table_name: &str) -> Vec<ColumnInfo> {
         return cols.to_vec();
     }
     Vec::new()
+}
+
+fn get_item_detail(app: &App, cat: &SchemaBrowserCategory, item_name: &str) -> Option<String> {
+    match cat {
+        SchemaBrowserCategory::Sequences => {
+            for seqs in app.metadata_cache.sequences.values() {
+                for s in seqs {
+                    if s.name == item_name {
+                        let mut out = format!("Type:     {}\n", s.data_type);
+                        if let Some(start) = s.start_value {
+                            out.push_str(&format!("Start:    {}\n", start));
+                        }
+                        if let Some(inc) = s.increment {
+                            out.push_str(&format!("Increment: {}\n", inc));
+                        }
+                        return Some(out);
+                    }
+                }
+            }
+            None
+        }
+        SchemaBrowserCategory::Triggers => {
+            for triggers in app.metadata_cache.triggers.values() {
+                for t in triggers {
+                    let display_name = format!("{} (on {})", t.name, t.table);
+                    if display_name == item_name || t.name == item_name {
+                        let mut out = format!("Table:    {}\n", t.table);
+                        out.push_str(&format!("Event:    {}\n", t.event));
+                        out.push_str(&format!("Timing:   {}\n", t.timing));
+                        out.push_str(&format!("Type:     {}\n", t.orientation));
+                        if !t.definition.is_empty() {
+                            out.push_str(&format!("Definition:\n{}", t.definition));
+                        }
+                        return Some(out);
+                    }
+                }
+            }
+            None
+        }
+        SchemaBrowserCategory::Functions => {
+            for funcs in app.metadata_cache.functions.values() {
+                for f in funcs {
+                    if f.name == item_name {
+                        let mut out = String::new();
+                        if let Some(ref ret) = f.return_type {
+                            out.push_str(&format!("Returns:  {}\n", ret));
+                        }
+                        out.push_str(&format!("Language: {}\n", f.language));
+                        if !f.args.is_empty() {
+                            out.push_str("Arguments:\n");
+                            for arg in &f.args {
+                                out.push_str(&format!(
+                                    "  {} {} {}\n",
+                                    arg.mode, arg.name, arg.type_name
+                                ));
+                            }
+                        }
+                        if let Some(ref def) = f.definition {
+                            out.push_str(&format!("Definition:\n{}", def));
+                        }
+                        return Some(out);
+                    }
+                }
+            }
+            None
+        }
+        SchemaBrowserCategory::Procedures => {
+            for procs in app.metadata_cache.procedures.values() {
+                for p in procs {
+                    if p.name == item_name {
+                        let mut out = String::new();
+                        if !p.params.is_empty() {
+                            out.push_str("Parameters:\n");
+                            for param in &p.params {
+                                out.push_str(&format!(
+                                    "  {} {} {}\n",
+                                    param.mode, param.name, param.type_name
+                                ));
+                            }
+                        }
+                        return Some(out);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn get_item_ddl(_app: &App, _cat: &SchemaBrowserCategory, _item_name: &str) -> Option<String> {
@@ -913,7 +1088,50 @@ fn get_current_items(app: &App) -> Vec<String> {
             v.sort();
             v
         }
-        _ => Vec::new(),
+        SchemaBrowserCategory::Sequences => {
+            let mut v: Vec<String> = app
+                .metadata_cache
+                .sequences
+                .values()
+                .flat_map(|seqs| seqs.iter().map(|s| s.name.clone()))
+                .collect();
+            v.sort();
+            v
+        }
+        SchemaBrowserCategory::Triggers => {
+            let mut v: Vec<String> = app
+                .metadata_cache
+                .triggers
+                .values()
+                .flat_map(|triggers| {
+                    triggers
+                        .iter()
+                        .map(|t| format!("{} (on {})", t.name, t.table))
+                })
+                .collect();
+            v.sort();
+            v
+        }
+        SchemaBrowserCategory::Functions => {
+            let mut v: Vec<String> = app
+                .metadata_cache
+                .functions
+                .values()
+                .flat_map(|funcs| funcs.iter().map(|f| f.name.clone()))
+                .collect();
+            v.sort();
+            v
+        }
+        SchemaBrowserCategory::Procedures => {
+            let mut v: Vec<String> = app
+                .metadata_cache
+                .procedures
+                .values()
+                .flat_map(|procs| procs.iter().map(|p| p.name.clone()))
+                .collect();
+            v.sort();
+            v
+        }
     }
 }
 

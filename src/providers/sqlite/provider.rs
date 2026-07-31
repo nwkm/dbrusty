@@ -293,36 +293,28 @@ impl DatabaseProvider for SqliteProvider {
         })
     }
 
-    async fn get_create_table_ddl(
-        &self,
-        _schema: &str,
-        table: &str,
-    ) -> DatabaseResult<String> {
+    async fn get_create_table_ddl(&self, _schema: &str, table: &str) -> DatabaseResult<String> {
         let pool = self.pool()?;
-        let row = sqlx::query(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
-        )
-        .bind(table)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| {
-            DatabaseError::Metadata(format!("Table \"{}\" not found in sqlite_master", table))
-        })?;
+        let row = sqlx::query("SELECT sql FROM sqlite_master WHERE type='table' AND name=?1")
+            .bind(table)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| {
+                DatabaseError::Metadata(format!("Table \"{}\" not found in sqlite_master", table))
+            })?;
         let ddl: String = row.get("sql");
         Ok(format!("{ddl};"))
     }
 
     async fn get_create_view_ddl(&self, _schema: &str, view: &str) -> DatabaseResult<String> {
         let pool = self.pool()?;
-        let row = sqlx::query(
-            "SELECT sql FROM sqlite_master WHERE type='view' AND name=?1",
-        )
-        .bind(view)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| {
-            DatabaseError::Metadata(format!("View \"{}\" not found in sqlite_master", view))
-        })?;
+        let row = sqlx::query("SELECT sql FROM sqlite_master WHERE type='view' AND name=?1")
+            .bind(view)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| {
+                DatabaseError::Metadata(format!("View \"{}\" not found in sqlite_master", view))
+            })?;
         let ddl: String = row.get("sql");
         Ok(format!("{ddl};"))
     }
@@ -334,10 +326,17 @@ impl DatabaseProvider for SqliteProvider {
         )
         .fetch_all(pool)
         .await?;
-        let mut parts: Vec<String> = rows.iter().map(|r| {
-            let sql: String = r.get("sql");
-            if !sql.ends_with(';') { format!("{sql};") } else { sql }
-        }).collect();
+        let mut parts: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                let sql: String = r.get("sql");
+                if !sql.ends_with(';') {
+                    format!("{sql};")
+                } else {
+                    sql
+                }
+            })
+            .collect();
         parts.push(String::new());
         Ok(parts.join("\n\n"))
     }
@@ -361,14 +360,17 @@ impl DatabaseProvider for SqliteProvider {
                 entry.columns.push(from);
                 entry.ref_columns.push(to);
             } else {
-                fks.insert(id, ForeignKeyInfo {
-                    name: format!("fk_{table}_{fk_table}_{id}"),
-                    columns: vec![from],
-                    ref_table: fk_table,
-                    ref_columns: vec![to],
-                    update_rule: Some(on_update),
-                    delete_rule: Some(on_delete),
-                });
+                fks.insert(
+                    id,
+                    ForeignKeyInfo {
+                        name: format!("fk_{table}_{fk_table}_{id}"),
+                        columns: vec![from],
+                        ref_table: fk_table,
+                        ref_columns: vec![to],
+                        update_rule: Some(on_update),
+                        delete_rule: Some(on_delete),
+                    },
+                );
             }
         }
         Ok(fks.into_values().collect())

@@ -7,6 +7,22 @@ All notable changes to Dbrusty are documented here.
 ## [Unreleased]
 
 ### Added
+- **Enhanced Logs page** (Page 8)
+  - Log level detection and color coding (ERROR=red, WARN=yellow, INFO=cyan, DEBUG=dark gray)
+  - `[LEVEL]` tags on each log line for quick visual scanning
+  - Scroll with `j`/`k`, jump to top with `g`/`G`, Page Up/Down support
+  - Filter/search with `/` (type-ahead filter across all log entries)
+  - Clear all logs with `c`
+  - Scroll position indicator (percentage) in footer
+  - Entry count display in header
+  - Filter status shows matched/total count
+- **Schema Browser enhancements** (Page 7)
+  - Sequences category now shows sequence names with type/start/increment details
+  - Triggers category now shows trigger names with table/event/timing/definition details
+  - Functions category now shows function names with return type/language/args/definition details
+  - Procedures category now shows procedure names with parameter details
+  - Keyboard hints bar at bottom showing context-sensitive keybindings
+  - All categories now populate from provider metadata during connection
 - **Vi-style modal editing** in Query Editor with NORMAL/INSERT modes
   - NORMAL mode: `h`/`l` cursor movement, `w`/`b` word navigation, `H`/`L` line start/end, `dw`/`db` word deletion, `x`/`Backspace` char deletion, `u`/`R` undo/redo, `Y` copy query to clipboard
   - INSERT mode: text entry, `Esc`/`jj` to return to NORMAL, `Ctrl+R` to run query
@@ -30,6 +46,9 @@ All notable changes to Dbrusty are documented here.
   - Filter re-applies automatically on new query results
   - Navigation (arrow keys, PageUp/Down, Home/End) stays within filtered row set
   - Filter input is scoped to Results focus — no key capture when other panes are focused
+- **Query cancellation** — in-flight queries can be cancelled with `Esc` or `Ctrl+C` while the app is busy
+  - Hung queries no longer deadlock the UI: every query runs under a 10-minute timeout backstop
+  - The connection is returned to the pool on cancel/timeout/failure, not silently lost
 
 ### Changed
 - `Ctrl+E` to enter editing mode starts in NORMAL mode (not INSERT)
@@ -48,6 +67,13 @@ All notable changes to Dbrusty are documented here.
 - **Filtered row navigation respects filtered set** — arrow keys, PageUp/Down, Home/End stay within filtered indices
 - **Explorer table nodes only show expand arrow on explicit expand (Right key)** — navigating tables with j/k no longer calls `set_children` on the tree node, preventing toggle arrows from appearing on leaf table nodes; columns are still cached for the detail pane display
 - **Switching to QueryEditor (4 key) no longer freezes keyboard when editor is hidden** — `switch_to(Page::QueryEditor)` only enters editing mode when `show_query_editor` is true; when the editor is hidden (`show_query_editor = false`), sidebar navigation keys continue to work
+- **Connect metadata loading no longer hangs forever** — each metadata call (`get_databases`, `get_tables`, `get_views`, …) runs under a per-call timeout; failures and timeouts are surfaced as warnings instead of silently showing an empty tree
+- **Disconnect during an in-flight query is now honored** — a queued disconnect drops the connection when the query completes instead of silently re-activating it; disconnecting during a connect is also handled
+- **Column loading, schema DDL generation, and disconnect no longer hold a `&pool` borrow across `.await`** — the provider is checked out of the pool for the call and returned afterwards, avoiding UI freezes and `!Send` futures
+- **Connection list persistence and keychain reads/writes moved off the event loop** (`tokio::task::spawn_blocking`) — keychain prompts and disk writes no longer block the async UI thread
+- **Log entries now use `VecDeque` with O(1) trimming** instead of `Vec::remove(0)` O(n) shifts, and `set_status` no longer double-clones the message
+- **Connection form `field_value()` returns `&str`** instead of cloning up to 7 strings per render
+- **Timeout message matches the real 10-second connect timeout** (was "20 seconds")
 
 ---
 

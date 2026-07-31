@@ -11,7 +11,7 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 
 ## Status
 
-**Current milestone: M15/29 — SQL Server provider.** PostgreSQL, SQLite, MongoDB, MySQL, MariaDB, and Redis are all fully supported. SQL Server is defined but not yet implemented.
+**Current milestone: M17 — Schema management.** PostgreSQL, SQLite, MongoDB, MySQL, MariaDB, and Redis are all fully supported. Schema Browser with Sequences/Triggers/Functions/Procedures browsing is complete. SQL Server is defined but not yet implemented.
 
 ## Features
 
@@ -42,6 +42,18 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 - Detail panel showing column info (type, PK, nullable, default, FK)
 - Double-click table name to auto-generate and run `SELECT * FROM "table" LIMIT 1000 OFFSET 0`
 
+### Schema Browser
+- Category panel: Tables, Views, Indexes, Sequences, Triggers, Functions, Procedures
+- Detail panel with item list and DDL/column info
+- Context-sensitive keyboard hints at bottom
+- Keyboard navigation: `j`/`k` categories, `h`/`l` items, `g`/`G` first/last
+- Actions: Create (`n`), Drop (`d`), Rename (`r`), Alter (`a`), Export DDL (`E`), Schema Diff (`s`)
+- Sequences: shows type, start value, increment
+- Triggers: shows table, event, timing, definition
+- Functions: shows return type, language, arguments, definition
+- Procedures: shows parameters
+- Import SQL (`I`), Import from file (`Shift+I`)
+
 ### Query Editor
 - Split layout: editor (25%) / results (75%), toggleable with `Alt+I`
 - **Table double-click** in Explorer automatically generates and runs `SELECT * FROM "table" LIMIT 1000 OFFSET 0`
@@ -57,6 +69,8 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 - Horizontal (Ctrl+B/F) and vertical (Ctrl+U/D) scrolling
 - Row highlighting (yellow/bold-black) on selected row
 - Dynamic key hints in status bar that update based on focus and edit mode
+- **Query cancellation** (`Esc` / `Ctrl+C`): cancel an in-flight query at any time; hung queries also time out automatically (10-minute backstop) so the app never freezes
+- **Timeout-hardened connections**: connect metadata loading (tables, views, sequences, triggers, functions) runs under per-call timeouts, with failures surfaced as warnings instead of silently showing an empty tree
 
 ### Inspector Pane
 - Column-by-column detail of selected row with type badges
@@ -91,7 +105,7 @@ Inspired by TablePlus, Lazygit, k9s, and DataGrip — designed for speed, extens
 | 5 | Query History | ✓ |
 | 6 | Favorites | ✓ |
 | 7 | Schema Browser | ✓ |
-| 8 | Logs | ✓ |
+| 8 | Logs | ✓ (color-coded levels, scroll, filter, clear) |
 | 9 | Settings | Placeholder |
 | `?` | Help | ✓ |
 | - | About | Placeholder |
@@ -116,6 +130,7 @@ cargo run --release
 |-----|--------|
 | `1`–`8` | Switch pages |
 | `Ctrl+Q` | Quit |
+| `Esc` / `Ctrl+C` | Cancel running query (when busy) |
 | `?` | Help |
 | `Tab` | Cycle focus forward |
 | `Shift+Tab` | Cycle focus reverse |
@@ -351,7 +366,7 @@ cargo fmt --check
 | M4 | SQLite provider | Connect/ping, metadata queries (tables, columns, indexes, views), transactions, server info | ✓ |
 | M5 | Connection UI | Connection list with DB-type icons, add/edit/delete modals, status indicators, double-click connect | ✓ |
 | M6 | Database Explorer | Tree view: Server → Databases → Schemas → Tables/Views/Indexes/Functions/Procedures, lazy-loading columns on expand, sidebar detail panel with column info (type, PK, nullable, default), keyboard and mouse navigation | ✓ |
-| M7 | Query execution & results | Split editor/results layout, SQL execution (Ctrl+R), SELECT/non-SELECT detection, column headers, row/cell selection, horizontal/vertical scrolling (Ctrl+B/F/U/D), copy cell (Y), mouse scroll | ✓ |
+| M7 | Query execution & results | Split editor/results layout, SQL execution (Ctrl+R), SELECT/non-SELECT detection, column headers, row/cell selection, horizontal/vertical scrolling (Ctrl+B/F/U/D), copy cell (Y), mouse scroll, query cancellation (Esc/Ctrl+C) with timeout backstop | ✓ |
 | M8 | Data editing | Grid cell editing via popup (Enter/Tab/Esc), Inspector pane (Alt+H) with inline editing, JSON tree viewer for nested data, row highlighting, cell edit with undo (Alt+Z), MongoDB document list inline editing | ✓ |
 | M9 | PostgreSQL provider | Connect/ping, metadata (tables, columns, indexes, views, sequences, triggers, functions, procedures, extensions, custom types), server info, transactions, chrono type support | ✓ |
 | M10 | MongoDB provider | Connect/ping, CRUD operations (insertOne/Many, updateOne/Many, deleteOne/Many, find, aggregate, count, distinct), collection/column/index metadata, explorer tree integration, JSON document viewer | ✓ |
@@ -361,7 +376,7 @@ cargo fmt --check
 | M14 | MariaDB provider | Connect/ping, metadata queries (tables, columns, indexes, views, triggers, functions, procedures, sequences, custom types), CRUD, transactions, cancel query, server info | ✓ |
 | M15 | SQL Server provider | Connect/ping, metadata queries, CRUD, transactions | |
 | M16 | Redis provider | Key browser, TTL, streams, hashes, sets, lists, sorted sets, pub/sub | ✓ |
-| M17 | Schema management | CREATE/ALTER/DROP/RENAME tables, generate DDL, reverse engineer schema, schema diff | |
+| M17 | Schema management | CREATE/ALTER/DROP/RENAME tables, generate DDL, reverse engineer schema, schema diff, Sequences/Triggers/Functions/Procedures browsing | ✓ |
 | M18 | Import / Export | CSV, JSON, SQL, Excel, Parquet, XML, YAML, compressed export | |
 | M19 | Query history | History log, pinned queries, folders, tags, search, favorite, import/export | |
 | M20 | Bookmarks & favorites | Bookmark rows, tables, queries, connections, schemas | |

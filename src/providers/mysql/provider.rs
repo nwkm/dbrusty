@@ -727,3 +727,64 @@ fn parse_schema_table(identifier: &str) -> (String, String) {
         ("public".to_string(), identifier.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_schema_table ─────────────────────────────────────
+
+    #[test]
+    fn parse_schema_table_with_db() {
+        assert_eq!(
+            parse_schema_table("testdb.users"),
+            ("testdb".to_string(), "users".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_no_db() {
+        assert_eq!(
+            parse_schema_table("users"),
+            ("public".to_string(), "users".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_multiple_dots() {
+        assert_eq!(
+            parse_schema_table("a.b.t"),
+            ("a.b".to_string(), "t".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_empty() {
+        assert_eq!(
+            parse_schema_table(""),
+            ("public".to_string(), "".to_string())
+        );
+    }
+
+    // ── encode_url_component ───────────────────────────────────
+
+    #[test]
+    fn encode_url_component_alphanumeric() {
+        assert_eq!(encode_url_component("admin"), "admin");
+    }
+
+    #[test]
+    fn encode_url_component_password_with_special() {
+        assert_eq!(encode_url_component("p@ss!#"), "p%40ss%21%23");
+    }
+
+    #[test]
+    fn encode_url_component_safe_chars() {
+        assert_eq!(encode_url_component("a-z_0.9~"), "a-z_0.9~");
+    }
+
+    #[test]
+    fn encode_url_component_empty() {
+        assert_eq!(encode_url_component(""), "");
+    }
+}

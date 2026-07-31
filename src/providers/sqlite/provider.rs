@@ -374,3 +374,46 @@ impl DatabaseProvider for SqliteProvider {
         Ok(fks.into_values().collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_schema_table_with_dot() {
+        assert_eq!(
+            parse_schema_table("main.users"),
+            ("main".to_string(), "users".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_no_dot() {
+        assert_eq!(
+            parse_schema_table("users"),
+            ("main".to_string(), "users".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_multiple_dots() {
+        // rfind('.') means it splits on the LAST dot
+        assert_eq!(
+            parse_schema_table("a.b.users"),
+            ("a.b".to_string(), "users".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_empty() {
+        assert_eq!(parse_schema_table(""), ("main".to_string(), "".to_string()));
+    }
+
+    #[test]
+    fn parse_schema_table_dot_only() {
+        assert_eq!(
+            parse_schema_table(".table"),
+            ("".to_string(), "table".to_string())
+        );
+    }
+}

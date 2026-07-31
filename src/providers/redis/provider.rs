@@ -744,3 +744,182 @@ fn column_info(name: &str, type_name: &str, ordinal: usize) -> ColumnInfo {
         is_auto_increment: false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_redis_args ───────────────────────────────────────
+
+    #[test]
+    fn parse_redis_args_simple() {
+        assert_eq!(
+            parse_redis_args("SET key value"),
+            vec!["SET", "key", "value"]
+        );
+    }
+
+    #[test]
+    fn parse_redis_args_empty() {
+        assert!(parse_redis_args("").is_empty());
+    }
+
+    #[test]
+    fn parse_redis_args_whitespace_only() {
+        assert!(parse_redis_args("   ").is_empty());
+    }
+
+    #[test]
+    fn parse_redis_args_single_quoted() {
+        assert_eq!(
+            parse_redis_args("SET 'key with space' val"),
+            vec!["SET", "key with space", "val"]
+        );
+    }
+
+    #[test]
+    fn parse_redis_args_double_quoted() {
+        assert_eq!(
+            parse_redis_args(r#"SET "key with space" val"#),
+            vec!["SET", "key with space", "val"]
+        );
+    }
+
+    #[test]
+    fn parse_redis_args_double_quoted_escape() {
+        assert_eq!(
+            parse_redis_args(r#"SET "key\"quote" val"#),
+            vec!["SET", "key\"quote", "val"]
+        );
+    }
+
+    #[test]
+    fn parse_redis_args_multiple_spaces() {
+        assert_eq!(
+            parse_redis_args("SET   key   value"),
+            vec!["SET", "key", "value"]
+        );
+    }
+
+    #[test]
+    fn parse_redis_args_single_arg() {
+        assert_eq!(parse_redis_args("PING"), vec!["PING"]);
+    }
+
+    // ── parse_key_info ─────────────────────────────────────────
+
+    #[test]
+    fn parse_key_info_with_dot() {
+        assert_eq!(
+            parse_key_info("db0.mykey"),
+            ("db0".to_string(), "mykey".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_key_info_no_dot() {
+        assert_eq!(
+            parse_key_info("mykey"),
+            ("db0".to_string(), "mykey".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_key_info_multiple_dots() {
+        assert_eq!(
+            parse_key_info("db0.namespace.key"),
+            ("db0.namespace".to_string(), "key".to_string())
+        );
+    }
+
+    // ── redis_value_to_string ──────────────────────────────────
+
+    #[test]
+    fn redis_value_to_string_nil() {
+        assert_eq!(redis_value_to_string(&RedisValue::Nil), "(nil)");
+    }
+
+    #[test]
+    fn redis_value_to_string_int() {
+        assert_eq!(redis_value_to_string(&RedisValue::Int(42)), "42");
+    }
+
+    #[test]
+    fn redis_value_to_string_ok() {
+        assert_eq!(redis_value_to_string(&RedisValue::Okay), "OK");
+    }
+
+    #[test]
+    fn redis_value_to_string_bulk() {
+        assert_eq!(
+            redis_value_to_string(&RedisValue::BulkString(b"hello".to_vec())),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn redis_value_to_string_array() {
+        let arr = RedisValue::Array(vec![RedisValue::Int(1), RedisValue::Int(2)]);
+        assert_eq!(redis_value_to_string(&arr), "[1, 2]");
+    }
+
+    // ── redis_value_to_value ───────────────────────────────────
+
+    #[test]
+    fn redis_value_to_value_nil() {
+        assert!(matches!(
+            redis_value_to_value(&RedisValue::Nil),
+            Value::Null
+        ));
+    }
+
+    #[test]
+    fn redis_value_to_value_int() {
+        assert!(matches!(
+            redis_value_to_value(&RedisValue::Int(42)),
+            Value::Integer(42)
+        ));
+    }
+
+    #[test]
+    fn redis_value_to_value_ok() {
+        assert!(matches!(
+            redis_value_to_value(&RedisValue::Okay),
+            Value::Text(ref s) if s == "OK"
+        ));
+    }
+
+    #[test]
+    fn redis_value_to_value_bulk_numeric() {
+        assert!(matches!(
+            redis_value_to_value(&RedisValue::BulkString(b"123".to_vec())),
+            Value::Integer(123)
+        ));
+    }
+
+    #[test]
+    fn redis_value_to_value_bulk_text() {
+        assert!(matches!(
+            redis_value_to_value(&RedisValue::BulkString(b"hello".to_vec())),
+            Value::Text(ref s) if s == "hello"
+        ));
+    }
+
+    // ── category_to_redis_type ─────────────────────────────────
+
+    #[test]
+    fn category_to_redis_type_valid() {
+        assert_eq!(category_to_redis_type("strings"), Some("string"));
+        assert_eq!(category_to_redis_type("hashes"), Some("hash"));
+        assert_eq!(category_to_redis_type("lists"), Some("list"));
+        assert_eq!(category_to_redis_type("sets"), Some("set"));
+        assert_eq!(category_to_redis_type("sorted_sets"), Some("zset"));
+        assert_eq!(category_to_redis_type("streams"), Some("stream"));
+    }
+
+    #[test]
+    fn category_to_redis_type_invalid() {
+        assert_eq!(category_to_redis_type("unknown"), None);
+        assert_eq!(category_to_redis_type(""), None);
+    }
+}

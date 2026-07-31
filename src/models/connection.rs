@@ -22,7 +22,6 @@ pub enum DatabaseType {
 }
 
 impl DatabaseType {
-    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             DatabaseType::Postgres => "postgres",
@@ -46,7 +45,6 @@ impl DatabaseType {
         }
     }
 
-    #[allow(dead_code)]
     pub fn display_name(&self) -> &'static str {
         match self {
             DatabaseType::Postgres => "PostgreSQL",
@@ -77,7 +75,6 @@ pub struct ConnectionConfig {
     pub password: Option<String>,
 }
 
-#[allow(dead_code)]
 impl ConnectionConfig {
     pub fn new(name: String, db_type: DatabaseType) -> Self {
         let port = db_type.default_port();

@@ -4,7 +4,6 @@ pub mod import;
 pub mod completion;
 pub mod config;
 pub mod database;
-pub mod events;
 pub mod logging;
 pub mod models;
 pub mod providers;

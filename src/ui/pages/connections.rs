@@ -359,7 +359,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         crate::app::ConnPageMode::Deleting(_) => {
             render_confirm_modal(frame, area, app);
         }
-        _ => {}
+        crate::app::ConnPageMode::Browse => {}
     }
 
     let hints = build_hints(app);

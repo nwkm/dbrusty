@@ -37,7 +37,11 @@ impl CompletionProvider for SqlCompletionProvider {
                     items.push(CompletionItem::new(f, CompletionKind::Function));
                 }
             }
-            _ => {}
+            Some(DatabaseType::SQLite)
+            | Some(DatabaseType::SQLServer)
+            | Some(DatabaseType::MongoDB)
+            | Some(DatabaseType::Redis)
+            | None => {}
         }
 
         for (_schema_key, tables) in &metadata.tables {

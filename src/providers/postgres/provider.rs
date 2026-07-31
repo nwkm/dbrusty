@@ -992,3 +992,85 @@ impl DatabaseProvider for PostgresProvider {
 fn quote_pg_id(s: &str) -> String {
     format!("\"{}\"", s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_schema_table ─────────────────────────────────────
+
+    #[test]
+    fn parse_schema_table_with_schema() {
+        assert_eq!(
+            parse_schema_table("public.users"),
+            ("public".to_string(), "users".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_no_schema() {
+        assert_eq!(
+            parse_schema_table("users"),
+            ("public".to_string(), "users".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_custom_schema() {
+        assert_eq!(
+            parse_schema_table("my_schema.my_table"),
+            ("my_schema".to_string(), "my_table".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_multiple_dots() {
+        assert_eq!(
+            parse_schema_table("a.b.c.table"),
+            ("a.b.c".to_string(), "table".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_schema_table_empty() {
+        assert_eq!(
+            parse_schema_table(""),
+            ("public".to_string(), "".to_string())
+        );
+    }
+
+    // ── encode_url_component ───────────────────────────────────
+
+    #[test]
+    fn encode_url_component_alphanumeric() {
+        assert_eq!(encode_url_component("hello123"), "hello123");
+    }
+
+    #[test]
+    fn encode_url_component_special_chars() {
+        assert_eq!(encode_url_component("p@ss:word!"), "p%40ss%3Aword%21");
+    }
+
+    #[test]
+    fn encode_url_component_safe_chars() {
+        assert_eq!(encode_url_component("a-b_c.d~e"), "a-b_c.d~e");
+    }
+
+    #[test]
+    fn encode_url_component_space() {
+        assert_eq!(encode_url_component("hello world"), "hello%20world");
+    }
+
+    #[test]
+    fn encode_url_component_empty() {
+        assert_eq!(encode_url_component(""), "");
+    }
+
+    #[test]
+    fn encode_url_component_unicode() {
+        // Non-ASCII chars get percent-encoded
+        let encoded = encode_url_component("café");
+        assert!(encoded.contains('%'));
+        assert!(!encoded.contains('é'));
+    }
+}

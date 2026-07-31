@@ -169,7 +169,10 @@ fn extract_prefix(line: &str, cursor_pos: usize) -> String {
     let text = &line[..cursor_pos.min(line.len())];
     let mut end = text.len();
     while end > 0 {
-        let c = text[..end].chars().last().unwrap();
+        let c = match text[..end].chars().next_back() {
+            Some(c) => c,
+            None => break,
+        };
         if c.is_alphanumeric() || c == '_' || c == '$' {
             end -= c.len_utf8();
         } else {

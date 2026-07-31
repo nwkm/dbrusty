@@ -424,8 +424,7 @@ impl DatabaseProvider for MongoProvider {
         {
             Some(c) => *c,
             None => {
-                if obj.len() == 1 {
-                    let (key, val) = obj.iter().next().unwrap();
+                if let Some((key, val)) = obj.iter().next() {
                     if val.as_i64() == Some(1) || val.as_f64() == Some(1.0) {
                         return self
                             .exec_find(
@@ -1048,5 +1047,142 @@ impl MongoProvider {
         let mut result = QueryResult::new_select(columns, rows, start.elapsed());
         result.raw_documents = Some(docs);
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── bson_type_name ─────────────────────────────────────────
+
+    #[test]
+    fn bson_type_name_null() {
+        assert_eq!(bson_type_name(&Bson::Null), "null");
+    }
+
+    #[test]
+    fn bson_type_name_boolean() {
+        assert_eq!(bson_type_name(&Bson::Boolean(true)), "boolean");
+    }
+
+    #[test]
+    fn bson_type_name_int32() {
+        assert_eq!(bson_type_name(&Bson::Int32(42)), "int32");
+    }
+
+    #[test]
+    fn bson_type_name_int64() {
+        assert_eq!(bson_type_name(&Bson::Int64(42)), "int64");
+    }
+
+    #[test]
+    fn bson_type_name_double() {
+        assert_eq!(bson_type_name(&Bson::Double(3.14)), "double");
+    }
+
+    #[test]
+    fn bson_type_name_string() {
+        assert_eq!(bson_type_name(&Bson::String("hello".into())), "string");
+    }
+
+    #[test]
+    fn bson_type_name_document() {
+        assert_eq!(bson_type_name(&Bson::Document(Document::new())), "object");
+    }
+
+    #[test]
+    fn bson_type_name_array() {
+        assert_eq!(bson_type_name(&Bson::Array(vec![])), "array");
+    }
+
+    // ── bson_to_value ──────────────────────────────────────────
+
+    #[test]
+    fn bson_to_value_null() {
+        assert!(matches!(bson_to_value(&Bson::Null), Value::Null));
+    }
+
+    #[test]
+    fn bson_to_value_bool() {
+        assert!(matches!(
+            bson_to_value(&Bson::Boolean(true)),
+            Value::Bool(true)
+        ));
+    }
+
+    #[test]
+    fn bson_to_value_int32() {
+        assert!(matches!(
+            bson_to_value(&Bson::Int32(42)),
+            Value::Integer(42)
+        ));
+    }
+
+    #[test]
+    fn bson_to_value_int64() {
+        assert!(matches!(
+            bson_to_value(&Bson::Int64(99)),
+            Value::Integer(99)
+        ));
+    }
+
+    #[test]
+    fn bson_to_value_double() {
+        assert!(matches!(
+            bson_to_value(&Bson::Double(1.5)),
+            Value::Float(f) if (f - 1.5).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn bson_to_value_string() {
+        assert!(matches!(
+            bson_to_value(&Bson::String("hi".into())),
+            Value::Text(ref s) if s == "hi"
+        ));
+    }
+
+    #[test]
+    fn bson_to_value_array() {
+        let v = bson_to_value(&Bson::Array(vec![Bson::Int32(1), Bson::Int32(2)]));
+        assert!(matches!(v, Value::Json(_)));
+    }
+
+    // ── combine_types ──────────────────────────────────────────
+
+    #[test]
+    fn combine_types_same() {
+        assert_eq!(combine_types("string", "string"), "string");
+    }
+
+    #[test]
+    fn combine_types_different() {
+        let result = combine_types("string", "int32");
+        assert!(result.starts_with("mixed("));
+        assert!(result.contains("int32"));
+        assert!(result.contains("string"));
+    }
+
+    #[test]
+    fn combine_types_already_mixed() {
+        let result = combine_types("mixed(int32, string)", "boolean");
+        assert!(result.contains("boolean"));
+        assert!(result.contains("int32"));
+        assert!(result.contains("string"));
+    }
+
+    #[test]
+    fn combine_types_mixed_no_duplicate() {
+        let result = combine_types("mixed(int32, string)", "int32");
+        assert_eq!(result, "mixed(int32, string)");
+    }
+
+    #[test]
+    fn combine_types_three_way() {
+        let result = combine_types("mixed(boolean, string)", "int32");
+        assert!(result.contains("boolean"));
+        assert!(result.contains("int32"));
+        assert!(result.contains("string"));
     }
 }

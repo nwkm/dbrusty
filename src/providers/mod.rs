@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 pub mod mariadb;
 pub mod mongodb;

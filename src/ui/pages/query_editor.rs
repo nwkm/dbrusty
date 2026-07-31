@@ -303,7 +303,8 @@ fn render_editor(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let (top_area, results_area) = if app.show_query_editor {
-        let vertical = Layout::vertical([Constraint::Percentage(25), Constraint::Min(0)]);
+        let vertical =
+            Layout::vertical([Constraint::Percentage(app.editor_pct), Constraint::Min(0)]);
         let [editor_area, res_area] = vertical.areas(area);
         (Some(editor_area), res_area)
     } else {

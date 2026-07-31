@@ -11,6 +11,40 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_METADATA_TIMEOUT: Duration = Duration::from_secs(15);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(600);
 
+// Pane resizing — sizes are stored as percentages so terminal resizes reflow.
+const RESIZE_STEP: u16 = 2;
+const MIN_SIDEBAR_PCT: u16 = 8;
+const MAX_SIDEBAR_PCT: u16 = 60;
+const MIN_INSPECTOR_PCT: u16 = 8;
+const MAX_INSPECTOR_PCT: u16 = 60;
+const MIN_EDITOR_PCT: u16 = 10;
+const MAX_EDITOR_PCT: u16 = 90;
+pub(crate) const MIN_MAIN_W: u16 = 40;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeDirection {
+    ShrinkWidth,
+    GrowWidth,
+    ShrinkHeight,
+    GrowHeight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeTarget {
+    SidebarWidth,
+    InspectorWidth,
+    EditorHeight,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResizeDrag {
+    pub target: ResizeTarget,
+    pub start_col: u16,
+    pub start_row: u16,
+    pub start_pct: u16,
+    pub total: u16,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellEditMode {
     Inactive,
@@ -635,6 +669,10 @@ pub struct App {
     pub sidebar_rect: Rect,
     pub main_rect: Rect,
     pub inspector_rect: Rect,
+    pub sidebar_pct: u16,
+    pub inspector_pct: u16,
+    pub editor_pct: u16,
+    pub resize_drag: Option<ResizeDrag>,
     pub last_click: Option<(u16, u16, Instant)>,
     pub log_entries: VecDeque<String>,
     pub log_scroll: usize,
@@ -751,7 +789,36 @@ impl App {
     }
 
     fn results_visible_rows(&self) -> usize {
-        self.main_rect.height.saturating_sub(4) as usize
+        self.results_area_height().saturating_sub(4) as usize
+    }
+
+    /// Height of the query editor strip inside the main pane (0 when hidden).
+    fn editor_area_height(&self) -> u16 {
+        if self.show_query_editor {
+            (self.main_rect.height as u32 * self.editor_pct as u32 / 100) as u16
+        } else {
+            0
+        }
+    }
+
+    /// Row where the results area begins (the editor/results split line).
+    fn results_area_y(&self) -> u16 {
+        self.main_rect.y + self.editor_area_height()
+    }
+
+    /// Height of the results area inside the main pane.
+    fn results_area_height(&self) -> u16 {
+        self.main_rect
+            .height
+            .saturating_sub(self.editor_area_height())
+    }
+
+    /// Total width of the three panes (sidebar + main + inspector).
+    fn content_width(&self) -> u16 {
+        self.sidebar_rect
+            .width
+            .saturating_add(self.main_rect.width)
+            .saturating_add(self.inspector_rect.width)
     }
 
     fn max_result_scroll_h(&self) -> u16 {
@@ -820,6 +887,10 @@ impl App {
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
             inspector_rect: Rect::default(),
+            sidebar_pct: 25,
+            inspector_pct: 25,
+            editor_pct: 25,
+            resize_drag: None,
             last_click: None,
             log_entries: VecDeque::new(),
             log_scroll: 0,
@@ -885,10 +956,23 @@ impl App {
 
     pub async fn run(&mut self) -> color_eyre::Result<()> {
         crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+        // Enable the kitty keyboard protocol so Ctrl+Shift combos (used for pane
+        // resizing) are unambiguous. Ignored by terminals that lack support.
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+            )
+        );
         let mut terminal = ratatui::init();
         let result = self.run_loop(&mut terminal).await;
         ratatui::restore();
-        crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PopKeyboardEnhancementFlags,
+            crossterm::event::DisableMouseCapture
+        );
         result
     }
 
@@ -2628,7 +2712,7 @@ impl App {
         };
         let total_lines = self.mongo_doc_state.cached_line_count(docs);
 
-        let visible_height = self.main_rect.height.saturating_sub(4) as usize;
+        let visible_height = self.results_area_height().saturating_sub(2) as usize;
 
         let step = 1usize;
 
@@ -2777,9 +2861,8 @@ impl App {
     }
 
     fn mongo_mouse_to_line(&self, mouse_row: u16) -> Option<usize> {
-        let combined_h = self.main_rect.height;
-        let results_area_height = combined_h * 75 / 100;
-        let results_area_y = self.main_rect.y + combined_h * 25 / 100;
+        let results_area_height = self.results_area_height();
+        let results_area_y = self.results_area_y();
         let inner_y = results_area_y + 1; // top border
         let inner_height = results_area_height.saturating_sub(2) as usize; // minus borders
         if mouse_row < inner_y {
@@ -3220,11 +3303,7 @@ impl App {
         if self.query_data.is_empty() || self.query_columns.is_empty() {
             return None;
         }
-        let results_area_y = if self.show_query_editor {
-            self.main_rect.y + self.main_rect.height * 25 / 100
-        } else {
-            self.main_rect.y
-        };
+        let results_area_y = self.results_area_y();
         let inner_x = self.main_rect.x + 1;
         let inner_y = results_area_y + 1;
 
@@ -3268,6 +3347,190 @@ impl App {
         None
     }
 
+    fn parse_resize_key(key: &KeyEvent) -> Option<ResizeDirection> {
+        if !key.modifiers.contains(KeyModifiers::CONTROL) {
+            return None;
+        }
+        match key.code {
+            // Ctrl+- / Ctrl+_ (kitty protocol), or 0x1F which crossterm maps to '7'.
+            KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('7') => {
+                Some(ResizeDirection::ShrinkHeight)
+            }
+            // Ctrl++ / Ctrl+= (kitty protocol), or 0x1D which crossterm maps to '5'.
+            KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('5') => {
+                Some(ResizeDirection::GrowHeight)
+            }
+            // Ctrl+< / Ctrl+, (kitty protocol), or 0x1C which crossterm maps to '4'.
+            KeyCode::Char('<') | KeyCode::Char(',') | KeyCode::Char('4') => {
+                Some(ResizeDirection::ShrinkWidth)
+            }
+            // Ctrl+> / Ctrl+. (kitty protocol), or 0x1E which crossterm maps to '6'.
+            KeyCode::Char('>') | KeyCode::Char('.') | KeyCode::Char('6') => {
+                Some(ResizeDirection::GrowWidth)
+            }
+            _ => None,
+        }
+    }
+
+    fn apply_resize_key(&mut self, dir: ResizeDirection) {
+        match (self.focus, dir) {
+            (Focus::Sidebar, ResizeDirection::ShrinkWidth) => {
+                self.sidebar_pct = self
+                    .sidebar_pct
+                    .saturating_sub(RESIZE_STEP)
+                    .max(MIN_SIDEBAR_PCT);
+            }
+            (Focus::Sidebar, ResizeDirection::GrowWidth) => {
+                self.sidebar_pct = self
+                    .sidebar_pct
+                    .saturating_add(RESIZE_STEP)
+                    .min(MAX_SIDEBAR_PCT);
+            }
+            (Focus::Inspector, ResizeDirection::ShrinkWidth) => {
+                self.inspector_pct = self
+                    .inspector_pct
+                    .saturating_sub(RESIZE_STEP)
+                    .max(MIN_INSPECTOR_PCT);
+            }
+            (Focus::Inspector, ResizeDirection::GrowWidth) => {
+                self.inspector_pct = self
+                    .inspector_pct
+                    .saturating_add(RESIZE_STEP)
+                    .min(MAX_INSPECTOR_PCT);
+            }
+            (Focus::Main, ResizeDirection::ShrinkWidth) => {
+                // Narrow the main pane by widening the sidebar.
+                self.sidebar_pct = self
+                    .sidebar_pct
+                    .saturating_add(RESIZE_STEP)
+                    .min(MAX_SIDEBAR_PCT);
+            }
+            (Focus::Main, ResizeDirection::GrowWidth) => {
+                self.sidebar_pct = self
+                    .sidebar_pct
+                    .saturating_sub(RESIZE_STEP)
+                    .max(MIN_SIDEBAR_PCT);
+            }
+            (Focus::Main, ResizeDirection::ShrinkHeight)
+                if self.current_page == Page::QueryEditor
+                    && self.query_editor_focus == QueryEditorFocus::Editor =>
+            {
+                self.editor_pct = self
+                    .editor_pct
+                    .saturating_sub(RESIZE_STEP)
+                    .max(MIN_EDITOR_PCT);
+            }
+            (Focus::Main, ResizeDirection::GrowHeight)
+                if self.current_page == Page::QueryEditor
+                    && self.query_editor_focus == QueryEditorFocus::Editor =>
+            {
+                self.editor_pct = self
+                    .editor_pct
+                    .saturating_add(RESIZE_STEP)
+                    .min(MAX_EDITOR_PCT);
+            }
+            (Focus::Main, ResizeDirection::ShrinkHeight)
+                if self.current_page == Page::QueryEditor
+                    && self.query_editor_focus == QueryEditorFocus::Results =>
+            {
+                // Shrinking the results strip grows the editor.
+                self.editor_pct = self
+                    .editor_pct
+                    .saturating_add(RESIZE_STEP)
+                    .min(MAX_EDITOR_PCT);
+            }
+            (Focus::Main, ResizeDirection::GrowHeight)
+                if self.current_page == Page::QueryEditor
+                    && self.query_editor_focus == QueryEditorFocus::Results =>
+            {
+                self.editor_pct = self
+                    .editor_pct
+                    .saturating_sub(RESIZE_STEP)
+                    .max(MIN_EDITOR_PCT);
+            }
+            _ => {
+                self.set_status("Pane height is fixed");
+                return;
+            }
+        }
+        self.update_key_hints();
+    }
+
+    /// Returns the pane boundary under the pointer, if any.
+    fn resize_boundary_at(&self, col: u16, row: u16) -> Option<ResizeTarget> {
+        if self.sidebar_rect.width > 0
+            && col == self.sidebar_rect.x + self.sidebar_rect.width
+            && row >= self.sidebar_rect.y
+            && row < self.sidebar_rect.y + self.sidebar_rect.height
+        {
+            return Some(ResizeTarget::SidebarWidth);
+        }
+        if self.show_inspector
+            && self.inspector_rect.width > 0
+            && col == self.inspector_rect.x
+            && row >= self.inspector_rect.y
+            && row < self.inspector_rect.y + self.inspector_rect.height
+        {
+            return Some(ResizeTarget::InspectorWidth);
+        }
+        if self.current_page == Page::QueryEditor
+            && self.show_query_editor
+            && row == self.results_area_y()
+            && col >= self.main_rect.x
+            && col < self.main_rect.x + self.main_rect.width
+        {
+            return Some(ResizeTarget::EditorHeight);
+        }
+        None
+    }
+
+    fn start_resize_drag(&mut self, target: ResizeTarget, col: u16, row: u16) {
+        let (start_pct, total) = match target {
+            ResizeTarget::SidebarWidth => (self.sidebar_pct, self.content_width()),
+            ResizeTarget::InspectorWidth => (self.inspector_pct, self.content_width()),
+            ResizeTarget::EditorHeight => (self.editor_pct, self.main_rect.height),
+        };
+        self.resize_drag = Some(ResizeDrag {
+            target,
+            start_col: col,
+            start_row: row,
+            start_pct,
+            total,
+        });
+    }
+
+    fn apply_resize_drag(&mut self, col: u16, row: u16) {
+        let Some(drag) = self.resize_drag else { return };
+        let total = drag.total.max(1) as i32;
+        let delta = match drag.target {
+            ResizeTarget::SidebarWidth | ResizeTarget::EditorHeight => {
+                let c = if drag.target == ResizeTarget::SidebarWidth {
+                    col as i32
+                } else {
+                    row as i32
+                };
+                let s = if drag.target == ResizeTarget::SidebarWidth {
+                    drag.start_col as i32
+                } else {
+                    drag.start_row as i32
+                };
+                (c - s) * 100 / total
+            }
+            ResizeTarget::InspectorWidth => -(col as i32 - drag.start_col as i32) * 100 / total,
+        };
+        let (min_pct, max_pct) = match drag.target {
+            ResizeTarget::SidebarWidth => (MIN_SIDEBAR_PCT, MAX_SIDEBAR_PCT),
+            ResizeTarget::InspectorWidth => (MIN_INSPECTOR_PCT, MAX_INSPECTOR_PCT),
+            ResizeTarget::EditorHeight => (MIN_EDITOR_PCT, MAX_EDITOR_PCT),
+        };
+        let new_pct = (drag.start_pct as i32 + delta).clamp(min_pct as i32, max_pct as i32) as u16;
+        match drag.target {
+            ResizeTarget::SidebarWidth => self.sidebar_pct = new_pct,
+            ResizeTarget::InspectorWidth => self.inspector_pct = new_pct,
+            ResizeTarget::EditorHeight => self.editor_pct = new_pct,
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         self.status_message.clear();
 
@@ -3284,6 +3547,12 @@ impl App {
                 self.pending_action = PendingAction::CancelQuery;
                 return;
             }
+        }
+
+        // Resize the focused pane. Ctrl+-/+/</> never reaches the panes' handlers.
+        if let Some(dir) = Self::parse_resize_key(&key) {
+            self.apply_resize_key(dir);
+            return;
         }
 
         if self.export_dialog.is_some() {
@@ -3876,6 +4145,20 @@ impl App {
         let (col, row) = (mouse.column, mouse.row);
 
         match mouse.kind {
+            MouseEventKind::Up(_) => {
+                self.resize_drag = None;
+                return;
+            }
+            MouseEventKind::Drag(_) => {
+                if self.resize_drag.is_some() {
+                    self.apply_resize_drag(col, row);
+                    return;
+                }
+            }
+            _ => {}
+        }
+
+        match mouse.kind {
             MouseEventKind::ScrollDown => {
                 if self.sidebar_rect.contains((col, row).into()) {
                     self.explorer_tree.select_down();
@@ -3944,6 +4227,10 @@ impl App {
                 }
             }
             MouseEventKind::Down(_) => {
+                if let Some(target) = self.resize_boundary_at(col, row) {
+                    self.start_resize_drag(target, col, row);
+                    return;
+                }
                 if self.sidebar_rect.contains((col, row).into()) {
                     let is_double = self.is_double_click(col, row);
                     self.focus = Focus::Sidebar;
@@ -4005,11 +4292,7 @@ impl App {
                     }
                 } else if self.current_page == Page::QueryEditor {
                     let is_double = self.is_double_click(col, row);
-                    let editor_bottom = if self.show_query_editor {
-                        self.main_rect.y + self.main_rect.height * 25 / 100
-                    } else {
-                        self.main_rect.y
-                    };
+                    let editor_bottom = self.results_area_y();
                     let inspector_left = self.main_rect.x + self.main_rect.width;
 
                     if col >= inspector_left {
@@ -4092,9 +4375,8 @@ impl App {
                                 self.mongo_doc_state.selected_line = line;
                                 if let Some(docs) = self.mongo_raw_documents.as_ref() {
                                     let total = self.mongo_doc_state.cached_line_count(docs);
-                                    let visible_height = (self.main_rect.height * 75 / 100)
-                                        .saturating_sub(2)
-                                        as usize;
+                                    let visible_height =
+                                        self.results_area_height().saturating_sub(2) as usize;
                                     self.mongo_doc_state.adjust_offset(visible_height, total);
                                 }
                                 if is_double {
@@ -4531,5 +4813,60 @@ impl App {
         }
         self.update_key_hints();
         self.set_status(format!("Focus: {:?}", self.focus));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resize_key(code: KeyCode, mods: KeyModifiers) -> Option<ResizeDirection> {
+        App::parse_resize_key(&KeyEvent::new(code, mods))
+    }
+
+    fn ctrl(c: char) -> Option<ResizeDirection> {
+        resize_key(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn resize_height_keys() {
+        // Kitty protocol encoding: exact chars with CONTROL.
+        assert_eq!(ctrl('-'), Some(ResizeDirection::ShrinkHeight));
+        assert_eq!(ctrl('_'), Some(ResizeDirection::ShrinkHeight));
+        assert_eq!(ctrl('+'), Some(ResizeDirection::GrowHeight));
+        assert_eq!(ctrl('='), Some(ResizeDirection::GrowHeight));
+        // Legacy control-byte remaps (0x1F -> '7', 0x1D -> '5').
+        assert_eq!(ctrl('7'), Some(ResizeDirection::ShrinkHeight));
+        assert_eq!(ctrl('5'), Some(ResizeDirection::GrowHeight));
+    }
+
+    #[test]
+    fn resize_width_keys() {
+        assert_eq!(ctrl('<'), Some(ResizeDirection::ShrinkWidth));
+        assert_eq!(ctrl(','), Some(ResizeDirection::ShrinkWidth));
+        assert_eq!(ctrl('>'), Some(ResizeDirection::GrowWidth));
+        assert_eq!(ctrl('.'), Some(ResizeDirection::GrowWidth));
+        // Legacy control-byte remaps (0x1C -> '4', 0x1E -> '6').
+        assert_eq!(ctrl('4'), Some(ResizeDirection::ShrinkWidth));
+        assert_eq!(ctrl('6'), Some(ResizeDirection::GrowWidth));
+    }
+
+    #[test]
+    fn resize_keys_do_not_shadow_existing_bindings() {
+        // Ctrl+L cycles focus and Ctrl+N navigates completions — must not resize.
+        assert_eq!(ctrl('l'), None);
+        assert_eq!(ctrl('n'), None);
+        assert_eq!(ctrl('p'), None);
+        // Ctrl+q quits, Ctrl+r runs a query.
+        assert_eq!(ctrl('q'), None);
+        assert_eq!(ctrl('r'), None);
+    }
+
+    #[test]
+    fn resize_keys_require_control() {
+        assert_eq!(resize_key(KeyCode::Char('-'), KeyModifiers::NONE), None);
+        assert_eq!(resize_key(KeyCode::Char('+'), KeyModifiers::SHIFT), None);
+        assert_eq!(resize_key(KeyCode::Char('<'), KeyModifiers::ALT), None);
+        assert_eq!(resize_key(KeyCode::Enter, KeyModifiers::CONTROL), None);
     }
 }

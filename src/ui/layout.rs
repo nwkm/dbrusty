@@ -8,7 +8,7 @@ use ratatui::{
 
 use serde_json;
 
-use crate::app::{App, Focus, InputMode, Page};
+use crate::app::{App, Focus, InputMode, Page, MIN_MAIN_W};
 use crate::export::ExportFormat;
 use crate::ui::pages;
 use crate::ui::sidebar;
@@ -24,10 +24,19 @@ pub fn render_layout(frame: &mut Frame, app: &mut App) {
     ]);
     let [topbar_area, content_area, footer_area] = vertical.areas(area);
 
-    let sidebar_w = content_area.width / 4;
-    let inspector_w = if app.show_inspector { sidebar_w } else { 0 };
-    let main_w = content_area
-        .width
+    let content_w = content_area.width;
+    let sidebar_w = ((content_w as u32 * app.sidebar_pct as u32 / 100) as u16)
+        .min(content_w.saturating_sub(MIN_MAIN_W));
+    let inspector_w = if app.show_inspector {
+        ((content_w as u32 * app.inspector_pct as u32 / 100) as u16).min(
+            content_w
+                .saturating_sub(sidebar_w)
+                .saturating_sub(MIN_MAIN_W),
+        )
+    } else {
+        0
+    };
+    let main_w = content_w
         .saturating_sub(sidebar_w)
         .saturating_sub(inspector_w);
 

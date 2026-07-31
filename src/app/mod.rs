@@ -1,10 +1,15 @@
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_METADATA_TIMEOUT: Duration = Duration::from_secs(15);
+const QUERY_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellEditMode {
@@ -49,6 +54,10 @@ enum BackgroundEvent {
         schemas_data: Vec<(String, Vec<String>)>,
         tables_data: Vec<(String, Vec<TableInfo>)>,
         views_data: Vec<(String, Vec<ViewInfo>)>,
+        sequences_data: Vec<(String, Vec<crate::database::types::SequenceInfo>)>,
+        triggers_data: Vec<(String, Vec<crate::database::types::TriggerInfo>)>,
+        functions_data: Vec<(String, Vec<crate::database::types::FunctionInfo>)>,
+        warnings: Vec<String>,
     },
     ConnectFailed {
         conn_name: String,
@@ -63,6 +72,11 @@ enum BackgroundEvent {
         provider_id: Uuid,
         provider: Box<dyn DatabaseProvider>,
         error: String,
+    },
+    QueryAborted {
+        provider_id: Uuid,
+        provider: Box<dyn DatabaseProvider>,
+        reason: String,
     },
 }
 
@@ -203,16 +217,16 @@ impl ConnectionFormState {
         }
     }
 
-    pub fn field_value(&self, idx: usize) -> String {
+    pub fn field_value(&self, idx: usize) -> &str {
         match idx {
-            0 => self.name.clone(),
-            1 => self.db_type.display_name().to_string(),
-            2 => self.host.clone(),
-            3 => self.port.clone(),
-            4 => self.database.clone(),
-            5 => self.username.clone(),
-            6 => self.password.clone(),
-            _ => String::new(),
+            0 => &self.name,
+            1 => self.db_type.display_name(),
+            2 => &self.host,
+            3 => &self.port,
+            4 => &self.database,
+            5 => &self.username,
+            6 => &self.password,
+            _ => "",
         }
     }
 
@@ -264,25 +278,40 @@ impl ConnectionFormState {
         };
         match self.db_type {
             DatabaseType::Postgres => {
-                format!("postgres://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+                format!(
+                    "postgres://{}:{}@{}:{}/{}",
+                    self.username, pw, self.host, self.port, self.database
+                )
             }
             DatabaseType::MySQL => {
-                format!("mysql://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+                format!(
+                    "mysql://{}:{}@{}:{}/{}",
+                    self.username, pw, self.host, self.port, self.database
+                )
             }
             DatabaseType::MariaDB => {
-                format!("mariadb://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+                format!(
+                    "mariadb://{}:{}@{}:{}/{}",
+                    self.username, pw, self.host, self.port, self.database
+                )
             }
             DatabaseType::SQLite => {
                 format!("sqlite://{}", self.database)
             }
             DatabaseType::SQLServer => {
-                format!("sqlserver://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+                format!(
+                    "sqlserver://{}:{}@{}:{}/{}",
+                    self.username, pw, self.host, self.port, self.database
+                )
             }
             DatabaseType::MongoDB => {
                 if self.username.is_empty() && pw.is_empty() {
                     format!("mongodb://{}:{}/{}", self.host, self.port, self.database)
                 } else {
-                    format!("mongodb://{}:{}@{}:{}/{}", self.username, pw, self.host, self.port, self.database)
+                    format!(
+                        "mongodb://{}:{}@{}:{}/{}",
+                        self.username, pw, self.host, self.port, self.database
+                    )
                 }
             }
             DatabaseType::Redis => {
@@ -301,7 +330,9 @@ impl ConnectionFormState {
     }
 }
 
-fn parse_connection_uri(uri: &str) -> Result<(DatabaseType, String, u16, String, String, String), String> {
+fn parse_connection_uri(
+    uri: &str,
+) -> Result<(DatabaseType, String, u16, String, String, String), String> {
     let (scheme, rest) = uri
         .split_once("://")
         .ok_or_else(|| "Invalid URI: missing ://".to_string())?;
@@ -318,7 +349,14 @@ fn parse_connection_uri(uri: &str) -> Result<(DatabaseType, String, u16, String,
     };
 
     if db_type == DatabaseType::SQLite {
-        return Ok((db_type, String::new(), 0, rest.to_string(), String::new(), String::new()));
+        return Ok((
+            db_type,
+            String::new(),
+            0,
+            rest.to_string(),
+            String::new(),
+            String::new(),
+        ));
     }
 
     let (auth_and_host, database) = if let Some(idx) = rest.find('/') {
@@ -343,7 +381,9 @@ fn parse_connection_uri(uri: &str) -> Result<(DatabaseType, String, u16, String,
 
     let (host, port) = if let Some(idx) = hostport.rfind(':') {
         let port_str = &hostport[idx + 1..];
-        let port: u16 = port_str.parse().map_err(|_| format!("Invalid port: {}", port_str))?;
+        let port: u16 = port_str
+            .parse()
+            .map_err(|_| format!("Invalid port: {}", port_str))?;
         (hostport[..idx].to_string(), port)
     } else {
         let host = hostport.to_string();
@@ -355,9 +395,20 @@ fn parse_connection_uri(uri: &str) -> Result<(DatabaseType, String, u16, String,
         (host, port)
     };
 
-    let host = if host.is_empty() { "localhost".into() } else { host };
+    let host = if host.is_empty() {
+        "localhost".into()
+    } else {
+        host
+    };
 
-    Ok((db_type, host, port, database.to_string(), username, password))
+    Ok((
+        db_type,
+        host,
+        port,
+        database.to_string(),
+        username,
+        password,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -499,12 +550,20 @@ pub enum PendingAction {
     None,
     Connect(ConnectionConfig),
     Disconnect(Uuid),
-    LoadColumns { table: String },
-    CacheColumns { table: String },
+    LoadColumns {
+        table: String,
+    },
+    CacheColumns {
+        table: String,
+    },
     OpenQuery(String),
     RunQuery(String),
+    CancelQuery,
     GenerateDdl(String),
-    ExportResults { format: crate::export::ExportFormat, filename: String },
+    ExportResults {
+        format: crate::export::ExportFormat,
+        filename: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -569,14 +628,19 @@ pub struct App {
     pub conn_page_mode: ConnPageMode,
     pub conn_form: Option<ConnectionFormState>,
     pub pending_action: PendingAction,
+    pub query_cancel_tx: Option<watch::Sender<bool>>,
+    pub disconnecting: HashSet<Uuid>,
     pub explorer_tree: TreeState,
     pub metadata_cache: MetadataCache,
     pub sidebar_rect: Rect,
     pub main_rect: Rect,
     pub inspector_rect: Rect,
     pub last_click: Option<(u16, u16, Instant)>,
-    pub log_entries: Vec<String>,
+    pub log_entries: VecDeque<String>,
     pub log_scroll: usize,
+    pub log_filter_active: bool,
+    pub log_filter_input: String,
+    pub log_visible_height: usize,
     pub query_text: String,
     pub query_results: String,
     pub query_columns: Vec<String>,
@@ -662,13 +726,15 @@ fn mongo_update_by_path(doc: &mut bson::Document, parts: &[&str], value: bson::B
 
 impl App {
     fn active_db_type(&self) -> Option<DatabaseType> {
-        self.pool.active_id.and_then(|id| {
-            self.connections
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| c.db_type.clone())
-        })
-        .or(self.active_db_type_cache.clone())
+        self.pool
+            .active_id
+            .and_then(|id| {
+                self.connections
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.db_type.clone())
+            })
+            .or(self.active_db_type_cache.clone())
     }
 
     pub fn is_mongo_query(&self) -> bool {
@@ -677,11 +743,11 @@ impl App {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
-        self.log_entries.push(msg.clone());
-        if self.log_entries.len() > 500 {
-            self.log_entries.remove(0);
+        if self.log_entries.len() >= 500 {
+            self.log_entries.pop_front();
         }
-        self.status_message = msg;
+        self.status_message.clone_from(&msg);
+        self.log_entries.push_back(msg);
     }
 
     fn results_visible_rows(&self) -> usize {
@@ -747,14 +813,19 @@ impl App {
             conn_page_mode: ConnPageMode::Browse,
             conn_form: None,
             pending_action: PendingAction::None,
+            query_cancel_tx: None,
+            disconnecting: HashSet::new(),
             explorer_tree: TreeState::new(Vec::new()),
             metadata_cache: MetadataCache::new(),
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
             inspector_rect: Rect::default(),
             last_click: None,
-            log_entries: Vec::new(),
+            log_entries: VecDeque::new(),
             log_scroll: 0,
+            log_filter_active: false,
+            log_filter_input: String::new(),
+            log_visible_height: 20,
             query_text: String::new(),
             query_results: String::new(),
             query_columns: Vec::new(),
@@ -871,17 +942,65 @@ impl App {
 
         tokio::spawn(async move {
             let connect_result =
-                tokio::time::timeout(Duration::from_secs(10), provider.connect(&conn)).await;
+                tokio::time::timeout(CONNECT_TIMEOUT, provider.connect(&conn)).await;
 
             match connect_result {
                 Ok(Ok(())) => {
-                    let databases = provider.get_databases().await.unwrap_or_default();
+                    let mut warnings: Vec<String> = Vec::new();
+
+                    // Run a metadata call under a timeout so a wedged server cannot
+                    // hang the connection phase forever. Warnings are surfaced to
+                    // the user instead of silently failing.
+                    async fn timed<T>(
+                        warnings: &mut Vec<String>,
+                        label: &str,
+                        fut: impl std::future::Future<
+                            Output = crate::database::provider::DatabaseResult<T>,
+                        >,
+                    ) -> Option<T> {
+                        match tokio::time::timeout(CONNECT_METADATA_TIMEOUT, fut).await {
+                            Ok(Ok(v)) => Some(v),
+                            Ok(Err(e)) => {
+                                warnings.push(format!("Failed to load {}: {}", label, e));
+                                None
+                            }
+                            Err(_) => {
+                                warnings.push(format!(
+                                    "Timed out loading {} after {}s",
+                                    label,
+                                    CONNECT_METADATA_TIMEOUT.as_secs()
+                                ));
+                                None
+                            }
+                        }
+                    }
+
                     let mut tables_data = Vec::new();
                     let mut views_data = Vec::new();
+                    let mut sequences_data: Vec<(
+                        String,
+                        Vec<crate::database::types::SequenceInfo>,
+                    )> = Vec::new();
+                    let mut triggers_data: Vec<(String, Vec<crate::database::types::TriggerInfo>)> =
+                        Vec::new();
+                    let mut functions_data: Vec<(
+                        String,
+                        Vec<crate::database::types::FunctionInfo>,
+                    )> = Vec::new();
                     let mut schemas_data: Vec<(String, Vec<String>)> = Vec::new();
 
+                    let databases = timed(&mut warnings, "databases", provider.get_databases())
+                        .await
+                        .unwrap_or_default();
+
                     for db in &databases {
-                        let mut schemas = provider.get_schemas().await.unwrap_or_default();
+                        let mut schemas = timed(
+                            &mut warnings,
+                            &format!("schemas for {}", db),
+                            provider.get_schemas(),
+                        )
+                        .await
+                        .unwrap_or_default();
                         if schemas.is_empty() {
                             schemas = vec![db.clone()];
                         }
@@ -889,11 +1008,50 @@ impl App {
 
                         for schema in &schemas {
                             let schema_key = format!("{}.{}", db, schema);
-                            if let Ok(tables) = provider.get_tables(schema).await {
+                            if let Some(tables) = timed(
+                                &mut warnings,
+                                &format!("tables for {}", schema_key),
+                                provider.get_tables(schema),
+                            )
+                            .await
+                            {
                                 tables_data.push((schema_key.clone(), tables));
                             }
-                            if let Ok(views) = provider.get_views(schema).await {
+                            if let Some(views) = timed(
+                                &mut warnings,
+                                &format!("views for {}", schema_key),
+                                provider.get_views(schema),
+                            )
+                            .await
+                            {
                                 views_data.push((schema_key.clone(), views));
+                            }
+                            if let Some(sequences) = timed(
+                                &mut warnings,
+                                &format!("sequences for {}", schema_key),
+                                provider.get_sequences(schema),
+                            )
+                            .await
+                            {
+                                sequences_data.push((schema_key.clone(), sequences));
+                            }
+                            if let Some(triggers) = timed(
+                                &mut warnings,
+                                &format!("triggers for {}", schema_key),
+                                provider.get_triggers(schema),
+                            )
+                            .await
+                            {
+                                triggers_data.push((schema_key.clone(), triggers));
+                            }
+                            if let Some(functions) = timed(
+                                &mut warnings,
+                                &format!("functions for {}", schema_key),
+                                provider.get_functions(schema),
+                            )
+                            .await
+                            {
+                                functions_data.push((schema_key.clone(), functions));
                             }
                         }
                     }
@@ -906,6 +1064,10 @@ impl App {
                         schemas_data,
                         tables_data,
                         views_data,
+                        sequences_data,
+                        triggers_data,
+                        functions_data,
+                        warnings,
                     });
                 }
                 Ok(Err(e)) => {
@@ -917,7 +1079,10 @@ impl App {
                 Err(_) => {
                     let _ = tx.send(BackgroundEvent::ConnectFailed {
                         conn_name,
-                        error: "Connection timed out after 20 seconds".to_string(),
+                        error: format!(
+                            "Connection timed out after {} seconds",
+                            CONNECT_TIMEOUT.as_secs()
+                        ),
                     });
                 }
             }
@@ -943,23 +1108,60 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         self.background_rx = rx;
 
+        // Watch channel lets the UI cancel an in-flight query. A new query
+        // replaces the previous cancellation handle.
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        self.query_cancel_tx = Some(cancel_tx);
+
         self.is_busy = true;
         self.set_status("Running query...");
 
+        enum QueryOutcome {
+            Done(QueryResult),
+            Cancelled,
+            Failed(String),
+        }
+
         tokio::spawn(async move {
-            match provider.execute_query(&sql).await {
-                Ok(result) => {
+            let mut cancel_rx = cancel_rx;
+            let outcome = tokio::time::timeout(QUERY_TIMEOUT, async {
+                tokio::select! {
+                    _ = cancel_rx.changed() => QueryOutcome::Cancelled,
+                    res = provider.execute_query(&sql) => match res {
+                        Ok(result) => QueryOutcome::Done(result),
+                        Err(e) => QueryOutcome::Failed(e.to_string()),
+                    },
+                }
+            })
+            .await;
+
+            match outcome {
+                Ok(QueryOutcome::Done(result)) => {
                     let _ = tx.send(BackgroundEvent::QueryDone {
                         provider_id: active_id,
                         provider,
                         result,
                     });
                 }
-                Err(e) => {
+                Ok(QueryOutcome::Cancelled) => {
+                    let _ = tx.send(BackgroundEvent::QueryAborted {
+                        provider_id: active_id,
+                        provider,
+                        reason: "cancelled".to_string(),
+                    });
+                }
+                Ok(QueryOutcome::Failed(e)) => {
                     let _ = tx.send(BackgroundEvent::QueryFailed {
                         provider_id: active_id,
                         provider,
-                        error: e.to_string(),
+                        error: e,
+                    });
+                }
+                Err(_) => {
+                    let _ = tx.send(BackgroundEvent::QueryAborted {
+                        provider_id: active_id,
+                        provider,
+                        reason: format!("timed out after {}s", QUERY_TIMEOUT.as_secs()),
                     });
                 }
             }
@@ -1004,49 +1206,81 @@ impl App {
                 }
                 self.spawn_query(sql);
             }
+            PendingAction::CancelQuery => {
+                if let Some(tx) = &self.query_cancel_tx {
+                    let _ = tx.send(true);
+                    self.set_status("Cancelling query...");
+                } else if self.is_busy {
+                    self.set_status("Connection in progress; it will time out automatically.");
+                } else {
+                    self.set_status("No query to cancel.");
+                }
+            }
             PendingAction::GenerateDdl(schema) => {
                 if self.is_busy {
                     self.set_status("Already busy, please wait...");
                     self.pending_action = PendingAction::GenerateDdl(schema);
                     return;
                 }
+                let active_id = match self.pool.active_id {
+                    Some(id) => id,
+                    None => {
+                        self.set_status("No active connection.");
+                        return;
+                    }
+                };
+                let provider = match self.pool.take(active_id) {
+                    Some(p) => p,
+                    None => {
+                        self.set_status("Provider not available.");
+                        return;
+                    }
+                };
                 self.is_busy = true;
                 self.set_status("Generating schema DDL...");
-                if let Some(provider) = self.pool.get_active() {
-                    match provider.get_full_schema_ddl(&schema).await {
-                        Ok(ddl) => {
-                            self.schema_browser.export_ddl = ddl;
-                            self.schema_browser.ddl_text = self.schema_browser.export_ddl.clone();
-                            self.schema_browser.mode = SchemaBrowserMode::Browse;
-                            self.set_status("Schema DDL generated.");
-                        }
-                        Err(e) => {
-                            self.set_status(format!("Failed to generate DDL: {}", e));
-                        }
+                match provider.get_full_schema_ddl(&schema).await {
+                    Ok(ddl) => {
+                        self.schema_browser.export_ddl = ddl;
+                        self.schema_browser.ddl_text = self.schema_browser.export_ddl.clone();
+                        self.schema_browser.mode = SchemaBrowserMode::Browse;
+                        self.set_status("Schema DDL generated.");
                     }
-                } else {
-                    self.set_status("No active connection.");
+                    Err(e) => {
+                        self.set_status(format!("Failed to generate DDL: {}", e));
+                    }
                 }
+                self.pool.give_back(active_id, provider);
                 self.is_busy = false;
             }
             PendingAction::Disconnect(id) => {
-                if let Some(provider) = self.pool.get_mut(id) {
-                    let name = self
-                        .connections
-                        .iter()
-                        .find(|c| c.id == id)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_default();
-                    if let Err(e) = provider.disconnect().await {
-                        self.set_status(format!("Error disconnecting: {}", e));
-                    } else {
-                        self.pool.unregister(id);
-                        self.active_db_type_cache = None;
-                        self.explorer_tree = TreeState::new(Vec::new());
-                        self.query_text.clear();
-                        self.query_editor = TextArea::default();
-                        self.set_status(format!("Disconnected from \"{}\"", name));
+                let name = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                if let Some(mut provider) = self.pool.take(id) {
+                    match provider.disconnect().await {
+                        Ok(()) => {
+                            self.after_disconnect(id);
+                            self.set_status(format!("Disconnected from \"{}\"", name));
+                        }
+                        Err(e) => {
+                            // Keep the connection registered so a failed disconnect
+                            // does not silently lose the provider.
+                            self.pool.register(id, provider);
+                            self.pool.set_active(id);
+                            self.set_status(format!("Error disconnecting: {}", e));
+                        }
                     }
+                } else {
+                    // The provider is checked out for an in-flight query; queue the
+                    // disconnect so the connection is not re-activated on completion.
+                    self.disconnecting.insert(id);
+                    self.set_status(format!(
+                        "Will disconnect \"{}\" after the running query finishes.",
+                        name
+                    ));
                 }
             }
             PendingAction::ExportResults { format, filename } => {
@@ -1098,7 +1332,18 @@ impl App {
                     schemas_data,
                     tables_data,
                     views_data,
+                    sequences_data,
+                    triggers_data,
+                    functions_data,
+                    warnings,
                 } => {
+                    if self.disconnecting.remove(&id) {
+                        // The user queued a disconnect while the connect was in
+                        // flight; drop the fresh connection instead of activating it.
+                        self.after_disconnect(id);
+                        self.set_status(format!("Disconnected from \"{}\"", conn_name));
+                        return;
+                    }
                     self.pool.register(id, provider);
                     self.pool.set_active(id);
                     self.active_db_type_cache = self
@@ -1118,25 +1363,49 @@ impl App {
                     );
 
                     for (schema_key, tables) in tables_data {
-                        self.metadata_cache
-                            .set_tables(schema_key, tables);
+                        self.metadata_cache.set_tables(schema_key, tables);
                     }
                     for (schema_key, views) in views_data {
-                        self.metadata_cache
-                            .set_views(schema_key, views);
+                        self.metadata_cache.set_views(schema_key, views);
+                    }
+                    for (schema_key, sequences) in sequences_data {
+                        self.metadata_cache.set_sequences(schema_key, sequences);
+                    }
+                    for (schema_key, triggers) in triggers_data {
+                        self.metadata_cache.set_triggers(schema_key, triggers);
+                    }
+                    for (schema_key, functions) in functions_data {
+                        self.metadata_cache.set_functions(schema_key, functions);
                     }
 
                     // Update last_connected and persist
                     if let Some(saved) = self.connections.iter_mut().find(|c| c.id == id) {
                         saved.last_connected = Some(chrono::Utc::now());
-                        let _ = storage::connections::save_connections(&self.connections);
+                        self.persist_connections();
                     }
                     self.current_page = Page::Explorer;
                     self.focus = Focus::Sidebar;
                     self.editing_query = false;
                     self.set_status(format!("Connected to \"{}\"", conn_name));
+                    if !warnings.is_empty() {
+                        let count = warnings.len();
+                        tracing::warn!(
+                            "{} metadata warning(s) during connect: {:?}",
+                            count,
+                            warnings
+                        );
+                        self.set_status(format!("Connected with {} metadata warning(s).", count));
+                    }
                 }
                 BackgroundEvent::ConnectFailed { conn_name, error } => {
+                    if let Some(id) = self
+                        .connections
+                        .iter()
+                        .find(|c| c.name == conn_name)
+                        .map(|c| c.id)
+                    {
+                        self.disconnecting.remove(&id);
+                    }
                     self.set_status(format!("Failed to connect to \"{}\": {}", conn_name, error));
                 }
                 BackgroundEvent::QueryDone {
@@ -1145,7 +1414,7 @@ impl App {
                     result,
                     ..
                 } => {
-                    self.pool.give_back(provider_id, provider);
+                    self.finish_query(provider_id, provider);
 
                     let sample_size = 1000.min(result.rows.len());
                     let col_widths: Vec<usize> = result
@@ -1200,7 +1469,7 @@ impl App {
                                 output.push_str(&format!(
                                     "{:width$}",
                                     col.name,
-                                    width = col_widths[i]
+                                    width = col_widths.get(i).copied().unwrap_or(0)
                                 ));
                             }
                             output.push('\n');
@@ -1221,7 +1490,7 @@ impl App {
                                     output.push_str(&format!(
                                         "{:width$}",
                                         val.to_string(),
-                                        width = col_widths[i]
+                                        width = col_widths.get(i).copied().unwrap_or(0)
                                     ));
                                 }
                                 output.push('\n');
@@ -1254,7 +1523,7 @@ impl App {
                     error,
                     ..
                 } => {
-                    self.pool.give_back(provider_id, provider);
+                    self.finish_query(provider_id, provider);
                     self.query_results = format!("Error: {}", error);
                     self.query_columns.clear();
                     self.query_data.clear();
@@ -1265,8 +1534,58 @@ impl App {
                     self.cell_edit_mode = CellEditMode::Inactive;
                     self.set_status(format!("Query failed: {}", error));
                 }
+                BackgroundEvent::QueryAborted {
+                    provider_id,
+                    provider,
+                    reason,
+                } => {
+                    self.finish_query(provider_id, provider);
+                    self.cell_edit_mode = CellEditMode::Inactive;
+                    self.query_results = format!("Query aborted: {}", reason);
+                    if reason == "cancelled" {
+                        self.set_status("Query cancelled.");
+                    } else {
+                        self.set_status(format!("Query aborted: {}", reason));
+                    }
+                }
             }
         }
+    }
+
+    /// Returns a completed query's provider to the pool — unless the user asked
+    /// to disconnect while the query was running, in which case the connection
+    /// is dropped instead of being re-activated.
+    fn finish_query(&mut self, provider_id: Uuid, provider: Box<dyn DatabaseProvider>) {
+        self.query_cancel_tx = None;
+        if self.disconnecting.remove(&provider_id) {
+            drop(provider);
+            self.pool.unregister(provider_id);
+            self.active_db_type_cache = None;
+            self.explorer_tree = TreeState::new(Vec::new());
+        } else {
+            self.pool.give_back(provider_id, provider);
+        }
+    }
+
+    /// Clears UI state tied to an active connection that has been disconnected.
+    fn after_disconnect(&mut self, id: Uuid) {
+        self.disconnecting.remove(&id);
+        self.pool.unregister(id);
+        self.query_cancel_tx = None;
+        self.active_db_type_cache = None;
+        self.explorer_tree = TreeState::new(Vec::new());
+        self.query_text.clear();
+        self.query_editor = TextArea::default();
+    }
+
+    /// Persists the connection list off the async event loop.
+    fn persist_connections(&self) {
+        let conns = self.connections.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = storage::connections::save_connections(&conns) {
+                tracing::warn!("Failed to save connections: {}", e);
+            }
+        });
     }
 
     #[allow(dead_code)]
@@ -1323,6 +1642,18 @@ impl App {
                                     .set_views(schema_key.clone(), views.clone());
                                 views_data.push((schema_key.clone(), views));
                             }
+                            if let Ok(sequences) = provider.get_sequences(schema).await {
+                                self.metadata_cache
+                                    .set_sequences(schema_key.clone(), sequences);
+                            }
+                            if let Ok(triggers) = provider.get_triggers(schema).await {
+                                self.metadata_cache
+                                    .set_triggers(schema_key.clone(), triggers);
+                            }
+                            if let Ok(functions) = provider.get_functions(schema).await {
+                                self.metadata_cache
+                                    .set_functions(schema_key.clone(), functions);
+                            }
                         }
                     }
 
@@ -1341,7 +1672,7 @@ impl App {
                     if saved.password.is_none() && conn.password.is_some() {
                         saved.password = conn.password.clone();
                     }
-                    let _ = storage::connections::save_connections(&self.connections);
+                    self.persist_connections();
                 }
                 self.current_page = Page::Explorer;
                 self.focus = Focus::Sidebar;
@@ -1355,45 +1686,63 @@ impl App {
     }
 
     async fn load_columns(&mut self, table: &str) {
-        if let Some(provider) = self.pool.get_active() {
-            match provider.get_columns(table).await {
-                Ok(columns) => {
-                    let tree_id = format!("table:{}", table);
-                    let child_items: Vec<crate::widgets::tree::TreeItem> = columns
-                        .iter()
-                        .map(|c| {
-                            crate::widgets::tree::TreeItem::leaf(
-                                &format!("column:{}.{}", table, c.name),
-                                &c.name,
-                                4,
-                            )
-                        })
-                        .collect();
-                    let item_count = child_items.len();
-                    self.metadata_cache
-                        .set_columns(table.to_string(), columns);
-                    self.explorer_tree.set_children(&tree_id, child_items);
-                    self.set_status(format!("Loaded {} items for \"{}\"", item_count, table));
-                }
-                Err(e) => {
-                    self.set_status(format!("Failed to load items: {}", e));
-                }
+        let active_id = match self.pool.active_id {
+            Some(id) => id,
+            None => {
+                self.set_status("No active connection.");
+                return;
+            }
+        };
+        let provider = match self.pool.take(active_id) {
+            Some(p) => p,
+            None => {
+                self.set_status("Provider not available.");
+                return;
+            }
+        };
+        match provider.get_columns(table).await {
+            Ok(columns) => {
+                let tree_id = format!("table:{}", table);
+                let child_items: Vec<crate::widgets::tree::TreeItem> = columns
+                    .iter()
+                    .map(|c| {
+                        crate::widgets::tree::TreeItem::leaf(
+                            &format!("column:{}.{}", table, c.name),
+                            &c.name,
+                            4,
+                        )
+                    })
+                    .collect();
+                let item_count = child_items.len();
+                self.metadata_cache.set_columns(table.to_string(), columns);
+                self.explorer_tree.set_children(&tree_id, child_items);
+                self.set_status(format!("Loaded {} items for \"{}\"", item_count, table));
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to load items: {}", e));
             }
         }
+        self.pool.give_back(active_id, provider);
     }
 
     async fn cache_columns(&mut self, table: &str) {
-        if let Some(provider) = self.pool.get_active() {
-            match provider.get_columns(table).await {
-                Ok(columns) => {
-                    self.metadata_cache
-                        .set_columns(table.to_string(), columns);
-                }
-                Err(e) => {
-                    self.set_status(format!("Failed to load items: {}", e));
-                }
+        let active_id = match self.pool.active_id {
+            Some(id) => id,
+            None => return,
+        };
+        let provider = match self.pool.take(active_id) {
+            Some(p) => p,
+            None => return,
+        };
+        match provider.get_columns(table).await {
+            Ok(columns) => {
+                self.metadata_cache.set_columns(table.to_string(), columns);
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to load items: {}", e));
             }
         }
+        self.pool.give_back(active_id, provider);
     }
 
     #[allow(dead_code)]
@@ -1458,7 +1807,7 @@ impl App {
                                 output.push_str(&format!(
                                     "{:width$}",
                                     col.name,
-                                    width = col_widths[i]
+                                    width = col_widths.get(i).copied().unwrap_or(0)
                                 ));
                             }
                             output.push('\n');
@@ -1479,7 +1828,7 @@ impl App {
                                     output.push_str(&format!(
                                         "{:width$}",
                                         val.to_string(),
-                                        width = col_widths[i]
+                                        width = col_widths.get(i).copied().unwrap_or(0)
                                     ));
                                 }
                                 output.push('\n');
@@ -2092,8 +2441,8 @@ impl App {
                     dialog.cursor -= 1;
                 }
             }
-            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE
-                || key.modifiers == KeyModifiers::SHIFT =>
+            KeyCode::Char(c)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
             {
                 dialog.filename.insert(dialog.cursor, c);
                 dialog.cursor += 1;
@@ -2109,7 +2458,11 @@ impl App {
                 self.update_key_hints();
             }
             KeyCode::Enter => {
-                let path = self.import_dialog.as_ref().map(|d| d.path.clone()).unwrap_or_default();
+                let path = self
+                    .import_dialog
+                    .as_ref()
+                    .map(|d| d.path.clone())
+                    .unwrap_or_default();
                 let path_trimmed = path.trim().to_string();
                 if path_trimmed.is_empty() {
                     self.set_status("File path cannot be empty.");
@@ -2178,8 +2531,8 @@ impl App {
                     d.cursor = d.path.len();
                 }
             }
-            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE
-                || key.modifiers == KeyModifiers::SHIFT =>
+            KeyCode::Char(c)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
             {
                 if let Some(ref mut d) = self.import_dialog {
                     d.path.insert(d.cursor, c);
@@ -2722,18 +3075,12 @@ impl App {
                         .to_string();
             }
         } else if self.export_dialog.is_some() {
-            self.key_hints =
-                " ←→:Format | Enter:Export | Esc:Cancel | Type:filename "
-                    .to_string();
+            self.key_hints = " ←→:Format | Enter:Export | Esc:Cancel | Type:filename ".to_string();
         } else if let Some(ref dialog) = self.import_dialog {
             if dialog.preview.is_some() {
-                self.key_hints =
-                    " Enter:Confirm Import | Esc:Cancel "
-                        .to_string();
+                self.key_hints = " Enter:Confirm Import | Esc:Cancel ".to_string();
             } else {
-                self.key_hints =
-                    " Enter:Load File | Esc:Cancel | Type:path "
-                        .to_string();
+                self.key_hints = " Enter:Load File | Esc:Cancel | Type:path ".to_string();
             }
         } else if self.focus == Focus::Main
             && self.current_page == Page::QueryEditor
@@ -2748,9 +3095,7 @@ impl App {
                     " j/k:Categories | h/l:Items | g/G:Top/Bot | n:Create | d:Drop | r:Rename | a:Alter | i:Import | I:ImportFile | E:Export | s:Diff | Tab:Focus "
                         .to_string();
             } else {
-                self.key_hints =
-                    " Esc:Cancel | Enter:Confirm "
-                        .to_string();
+                self.key_hints = " Esc:Cancel | Enter:Confirm ".to_string();
             }
         } else {
             self.key_hints =
@@ -2931,6 +3276,16 @@ impl App {
             return;
         }
 
+        // Cancel an in-flight query with Esc or Ctrl+C while busy.
+        if self.is_busy {
+            let wants_cancel = key.code == KeyCode::Esc
+                || (key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL);
+            if wants_cancel {
+                self.pending_action = PendingAction::CancelQuery;
+                return;
+            }
+        }
+
         if self.export_dialog.is_some() {
             self.handle_export_dialog_key(&key);
             return;
@@ -2981,7 +3336,13 @@ impl App {
             }
         }
 
-        if self.current_page == Page::SchemaBrowser && crate::ui::pages::schema_browser::handle_key(self, &key) {
+        if self.current_page == Page::SchemaBrowser
+            && crate::ui::pages::schema_browser::handle_key(self, &key)
+        {
+            return;
+        }
+
+        if self.current_page == Page::Logs && crate::ui::pages::logs::handle_key(self, &key) {
             return;
         }
 
@@ -3141,7 +3502,8 @@ impl App {
                         if let Some(name) = id.strip_prefix("table:") {
                             if !id.ends_with(':') {
                                 let table_name = name.to_string();
-                                self.pending_action = PendingAction::LoadColumns { table: table_name };
+                                self.pending_action =
+                                    PendingAction::LoadColumns { table: table_name };
                                 self.explorer_tree.toggle_selected();
                             }
                         } else {
@@ -3202,7 +3564,8 @@ impl App {
                                     Some(pos) => (&name[..pos], &name[pos + 1..]),
                                     None => ("", name),
                                 };
-                                let query = if self.active_db_type() == Some(DatabaseType::MongoDB) {
+                                let query = if self.active_db_type() == Some(DatabaseType::MongoDB)
+                                {
                                     if db_name.is_empty() {
                                         format!("{{ \"find\": \"{}\", \"limit\": 1000 }}\n", short)
                                     } else {
@@ -3316,19 +3679,23 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if let Some(conn) = self.connections.get(self.conn_list_selected) {
-                    let password = conn.password.clone().or_else(|| {
-                        match storage::credentials::get_password(&conn.password_key()) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                tracing::debug!("Failed to load password from keychain: {}", e);
-                                None
-                            }
-                        }
-                    });
-                    self.conn_form = Some(ConnectionFormState::from_config(
-                        conn,
-                        password.as_deref(),
-                    ));
+                    let password =
+                        conn.password
+                            .clone()
+                            .or_else(|| {
+                                match storage::credentials::get_password(&conn.password_key()) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            "Failed to load password from keychain: {}",
+                                            e
+                                        );
+                                        None
+                                    }
+                                }
+                            });
+                    self.conn_form =
+                        Some(ConnectionFormState::from_config(conn, password.as_deref()));
                     self.conn_page_mode = ConnPageMode::Editing(conn.id);
                 }
                 true
@@ -3415,7 +3782,9 @@ impl App {
                 }
                 true
             }
-            KeyCode::Char(ch) if (ch == 'h' || ch == 'H') && key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(ch)
+                if (ch == 'h' || ch == 'H') && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 if let Some(form) = &mut self.conn_form {
                     if form.form_tab != FormTab::Form {
                         form.form_tab = FormTab::Form;
@@ -3433,7 +3802,9 @@ impl App {
                 }
                 true
             }
-            KeyCode::Char(ch) if (ch == 'l' || ch == 'L') && key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(ch)
+                if (ch == 'l' || ch == 'L') && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 if let Some(form) = &mut self.conn_form {
                     if form.form_tab != FormTab::Uri {
                         form.form_tab = FormTab::Uri;
@@ -3448,16 +3819,17 @@ impl App {
                 }
                 if let Some(form) = &mut self.conn_form {
                     if form.form_tab == FormTab::Uri {
-                        let mut field =
-                            crate::widgets::input::InputField::with_value("", form.uri_input.clone());
+                        let mut field = crate::widgets::input::InputField::with_value(
+                            "",
+                            form.uri_input.clone(),
+                        );
                         field.handle_key(key);
                         form.uri_input = field.value;
                         return true;
                     }
                     if form.active_field != 1 {
-                        let val = form.field_value(form.active_field);
-                        let mut field =
-                            crate::widgets::input::InputField::with_value("", val);
+                        let val = form.field_value(form.active_field).to_string();
+                        let mut field = crate::widgets::input::InputField::with_value("", val);
                         field.handle_key(key);
                         form.set_field(form.active_field, field.value);
                     }
@@ -3474,9 +3846,11 @@ impl App {
                     if idx < self.connections.len() {
                         let name = self.connections[idx].name.clone();
                         let pwd_key = self.connections[idx].password_key();
-                        let _ = storage::credentials::delete_password(&pwd_key);
+                        tokio::task::spawn_blocking(move || {
+                            let _ = storage::credentials::delete_password(&pwd_key);
+                        });
                         self.connections.remove(idx);
-                        let _ = storage::connections::save_connections(&self.connections);
+                        self.persist_connections();
                         if self.conn_list_selected >= self.connections.len()
                             && !self.connections.is_empty()
                         {
@@ -3582,17 +3956,16 @@ impl App {
                             if let Some(ref id) = id {
                                 if let Some(name) = id.strip_prefix("table:") {
                                     if !id.ends_with(':') {
-                                        let is_redis = self.active_db_type()
-                                            == Some(DatabaseType::Redis);
+                                        let is_redis =
+                                            self.active_db_type() == Some(DatabaseType::Redis);
                                         if is_redis {
-                                            self.pending_action =
-                                                PendingAction::LoadColumns { table: name.to_string() };
+                                            self.pending_action = PendingAction::LoadColumns {
+                                                table: name.to_string(),
+                                            };
                                             self.explorer_tree.toggle_selected();
                                         } else {
                                             let (db_name, short) = match name.find('.') {
-                                                Some(pos) => {
-                                                    (&name[..pos], &name[pos + 1..])
-                                                }
+                                                Some(pos) => (&name[..pos], &name[pos + 1..]),
                                                 None => ("", name),
                                             };
                                             let query = if self.active_db_type()
@@ -3621,8 +3994,7 @@ impl App {
                                                     short = short
                                                 )
                                             };
-                                            self.pending_action =
-                                                PendingAction::OpenQuery(query);
+                                            self.pending_action = PendingAction::OpenQuery(query);
                                         }
                                     } else {
                                         self.explorer_tree.toggle_selected();
@@ -3864,9 +4236,10 @@ impl App {
             None => return,
         };
         let is_new = self.conn_form.as_ref().map_or(false, |f| f.is_new);
-        let password_cleared = self.conn_form.as_ref().map_or(false, |f| {
-            f.password.is_empty() && !f.is_new
-        });
+        let password_cleared = self
+            .conn_form
+            .as_ref()
+            .map_or(false, |f| f.password.is_empty() && !f.is_new);
 
         if is_new {
             self.connections.push(config.clone());
@@ -3874,19 +4247,26 @@ impl App {
             let prev_password_key = existing.password_key();
             *existing = config.clone();
             if prev_password_key != config.password_key() {
-                let _ = storage::credentials::delete_password(&prev_password_key);
+                tokio::task::spawn_blocking(move || {
+                    let _ = storage::credentials::delete_password(&prev_password_key);
+                });
             }
         }
 
+        let password_key = config.password_key();
         if password_cleared {
-            let _ = storage::credentials::delete_password(&config.password_key());
-        } else if let Some(pw) = &config.password {
-            if let Err(e) = storage::credentials::save_password(&config.password_key(), pw) {
-                tracing::debug!("Failed to save password to keychain: {}", e);
-            }
+            tokio::task::spawn_blocking(move || {
+                let _ = storage::credentials::delete_password(&password_key);
+            });
+        } else if let Some(pw) = config.password.clone() {
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = storage::credentials::save_password(&password_key, &pw) {
+                    tracing::debug!("Failed to save password to keychain: {}", e);
+                }
+            });
         }
 
-        let _ = storage::connections::save_connections(&self.connections);
+        self.persist_connections();
         self.conn_page_mode = ConnPageMode::Browse;
         self.conn_form = None;
 
